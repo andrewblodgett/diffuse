@@ -1,7 +1,12 @@
 package com.diffuse.backup
 
-/** Coarse stages of a backup run, in order, for progress reporting. */
-enum class BackupStage { Messages, Calls, Media, UploadingIndex, Complete }
+/**
+ * Coarse stages of a backup run, in the exact order they're both announced AND actually
+ * uploaded in — call log, then messages, then photos, then videos. Keeping one fixed order for
+ * both matters: the progress UI reporting a stage the runner isn't really uploading yet is
+ * confusing and was a real bug.
+ */
+enum class BackupStage { Calls, Messages, Photos, Videos, Complete }
 
 /**
  * A backup run reports its progress through this listener so the UI (and the scheduled
@@ -12,8 +17,10 @@ enum class BackupStage { Messages, Calls, Media, UploadingIndex, Complete }
 interface BackupProgress {
     /** Entered a new [stage]. */
     fun onStage(stage: BackupStage) {}
-    /** Streamed [done] of [total] media originals so far this run. */
-    fun onMediaProgress(done: Int, total: Int) {}
+    /** Streamed [done] of [total] photos so far this run. */
+    fun onPhotoProgress(done: Int, total: Int) {}
+    /** Streamed [done] of [total] videos so far this run. */
+    fun onVideoProgress(done: Int, total: Int) {}
 
     companion object {
         val NONE: BackupProgress = object : BackupProgress {}

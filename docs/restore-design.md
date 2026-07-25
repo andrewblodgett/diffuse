@@ -65,7 +65,7 @@ Restore is only possible if the backup captured enough. It did — the format
 | SMS | telephony `content://sms` | **Yes.** SMS Backup & Restore schema; all columns round-trip (dates in provider-native units). Already restorable *today* by the SyncTech app on a target phone. |
 | MMS | telephony `content://mms` | **Yes.** Parts + addresses + SMIL kept; binary bytes inline base64; `<mms date>` in seconds as the provider expects. |
 | Call log | `content://call_log/calls` | **Yes.** Full `<call>` rows in the SyncTech schema. |
-| Images/Video | MediaStore | **Metadata yes, mechanism separate.** The `media-*.xml` index keeps `relativePath`, `displayName`, mime, sizes and dates — enough to recreate each item under its original relative path. But MediaStore restore is a distinct *write* path (insert a pending item → stream bytes from Drive → publish), not a SyncTech concern, so it's the main net-new work when restore is built. |
+| Images/Video | MediaStore | **Metadata yes, mechanism separate.** The `photos-*.xml`/`videos-*.xml` indices keep `relativePath`, `displayName`, mime, sizes and dates — enough to recreate each item under its original relative path. But MediaStore restore is a distinct *write* path (insert a pending item → stream bytes from Drive → publish), not a SyncTech concern, so it's the main net-new work when restore is built. |
 
 **Gap to close when implementing:** media restore needs a MediaStore writer (the mirror of
 [`MediaSource`](../app/src/main/kotlin/com/diffuse/backup/provider/MediaSource.kt)) plus a Drive

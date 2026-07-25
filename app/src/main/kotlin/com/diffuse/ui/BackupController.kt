@@ -50,10 +50,15 @@ class BackupController(context: Context) {
     /** Live stage label during a run (e.g. "Backing up messages…"), else null. */
     var stageText by mutableStateOf<String?>(null)
         private set
-    /** Media streamed so far this run / total, for a progress bar; total 0 = not started. */
-    var mediaDone by mutableStateOf(0)
+    /** Photos streamed so far this run / total, for a progress bar; total 0 = not started. */
+    var photoDone by mutableStateOf(0)
         private set
-    var mediaTotal by mutableStateOf(0)
+    var photoTotal by mutableStateOf(0)
+        private set
+    /** Videos streamed so far this run / total, for a progress bar; total 0 = not started. */
+    var videoDone by mutableStateOf(0)
+        private set
+    var videoTotal by mutableStateOf(0)
         private set
     /** Outcome of the previous run, loaded from disk so it survives process death. */
     var lastRun by mutableStateOf<LastRun?>(engine.lastRun())
@@ -115,13 +120,16 @@ class BackupController(context: Context) {
         if (phase == Phase.BackingUp) return
         scope.launch(Dispatchers.IO) {
             phase = Phase.BackingUp
-            mediaDone = 0
-            mediaTotal = 0
+            photoDone = 0
+            photoTotal = 0
+            videoDone = 0
+            videoTotal = 0
             stageText = "Starting…"
             message = null
             val progress = object : BackupProgress {
                 override fun onStage(stage: BackupStage) { stageText = label(stage) }
-                override fun onMediaProgress(done: Int, total: Int) { mediaDone = done; mediaTotal = total }
+                override fun onPhotoProgress(done: Int, total: Int) { photoDone = done; photoTotal = total }
+                override fun onVideoProgress(done: Int, total: Int) { videoDone = done; videoTotal = total }
             }
             try {
                 val r = engine.runBackup(progress)
@@ -167,10 +175,10 @@ class BackupController(context: Context) {
     }
 
     private fun label(stage: BackupStage): String = when (stage) {
+        BackupStage.Calls -> "Backing up call log…"
         BackupStage.Messages -> "Backing up messages…"
-        BackupStage.Calls -> "Backing up calls…"
-        BackupStage.Media -> "Backing up photos & videos…"
-        BackupStage.UploadingIndex -> "Finishing up…"
+        BackupStage.Photos -> "Backing up photos…"
+        BackupStage.Videos -> "Backing up videos…"
         BackupStage.Complete -> "Done"
     }
 

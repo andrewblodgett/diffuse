@@ -25,6 +25,15 @@ interface DriveApi {
      * can't be determined. Lets the UI show *which* Google account is connected.
      */
     fun accountEmail(): String? = null
+
+    /**
+     * Every non-trashed file id currently visible to this app on Drive. Under `drive.file`
+     * scope that's exactly (and only) the files Diffuse itself created, so this is a cheap,
+     * complete picture of what's actually still backed up — the ground truth a local upload
+     * manifest should be checked against. Default returns empty so existing fakes that don't
+     * care about reconciliation keep compiling.
+     */
+    fun listAllFileIds(): Set<String> = emptySet()
 }
 
 /**
@@ -149,6 +158,30 @@ class DriveClient(
         null
     }
 
+    /**
+     * List every non-trashed, non-folder file id visible to this app, paging through the
+     * whole result set. Under `drive.file` scope Drive only shows files Diffuse created, so
+     * this is the complete set of what's really still on Drive right now — used to reconcile
+     * the local [com.diffuse.drive.store.UploadManifest] against reality.
+     */
+    override fun listAllFileIds(): Set<String> {
+        val q = "trashed=false and mimeType!='$FOLDER_MIME'"
+        val ids = mutableSetOf<String>()
+        var pageToken: String? = null
+        do {
+            val url = buildString {
+                append("$apiBase/files?q=${enc(q)}&fields=nextPageToken,files(id)&spaces=drive&pageSize=1000")
+                pageToken?.let { append("&pageToken=").append(enc(it)) }
+            }
+            val resp = authed("GET", url)
+            require(resp.isSuccess) { "list files failed: ${resp.code} ${resp.body}" }
+            val page = json.decodeFromString<FileListPage>(resp.body)
+            page.files.forEach { ids += it.id }
+            pageToken = page.nextPageToken
+        } while (pageToken != null)
+        return ids
+    }
+
     /** Attach a bearer token; on 401 refresh once and retry. */
     private fun authed(
         method: String,
@@ -178,6 +211,12 @@ class DriveClient(
 
     @Serializable
     private data class FileList(val files: List<DriveFile> = emptyList())
+
+    @Serializable
+    private data class FileListPage(
+        val files: List<DriveFile> = emptyList(),
+        val nextPageToken: String? = null,
+    )
 
     @Serializable
     private data class About(val user: AboutUser? = null)

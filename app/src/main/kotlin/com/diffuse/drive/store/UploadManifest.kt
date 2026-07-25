@@ -31,4 +31,19 @@ class UploadManifest(private val file: File) {
         file.parentFile?.mkdirs()
         file.outputStream().use { props.store(it, "Diffuse Drive upload manifest") }
     }
+
+    /**
+     * Drop every entry whose recorded fileId is not in [liveFileIds] — i.e. anything the
+     * manifest believes is on Drive but that has actually been deleted (or trashed) there.
+     * Returns true if anything was pruned, so the caller knows this run's "already backed up"
+     * picture was stale. Persists immediately when it changes anything.
+     */
+    fun retain(liveFileIds: Set<String>): Boolean {
+        val stale = props.stringPropertyNames().filter { props.getProperty(it) !in liveFileIds }
+        if (stale.isEmpty()) return false
+        stale.forEach { props.remove(it) }
+        file.parentFile?.mkdirs()
+        file.outputStream().use { props.store(it, "Diffuse Drive upload manifest") }
+        return true
+    }
 }

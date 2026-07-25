@@ -9,15 +9,20 @@ messages/calls can be restored onto a normal Android phone, not just archived.
 
 ```
 <outputDir>/
-  sms-<yyyyMMddHHmmss>.xml     # <smses> root: <sms> + <mms> (attachments inline base64)
-  calls-<yyyyMMddHHmmss>.xml   # <calls> root: <call>
-  media-<yyyyMMddHHmmss>.xml   # <medias> index (Diffuse's own; not SyncTech)
-  media/<relative_path>/<name> # photo/video originals, copied byte-for-byte
+  calls-<yyyyMMddHHmmss>.xml    # <calls> root: <call>
+  sms-<yyyyMMddHHmmss>.xml      # <smses> root: <sms> + <mms> (attachments inline base64)
+  photos-<yyyyMMddHHmmss>.xml   # <medias> index for images (Diffuse's own; not SyncTech)
+  videos-<yyyyMMddHHmmss>.xml   # <medias> index for video, same shape
 ```
 
+Each document uploads to Drive the moment it's written — in this fixed order (call log,
+messages, photos, videos) — rather than as a batch sweep afterward, so the order things
+actually appear in Drive matches the order the backup UI announces.
+
 Photos and videos are **not** part of the SMS Backup & Restore schema — a JPEG/MP4 is
-already a standard format — so they are copied out as their original files and described
-by the `media-*.xml` index rather than folded into XML.
+already a standard format — so their bytes stream straight to Drive (see
+`DriveMediaSink`) and are described by the `photos-*.xml`/`videos-*.xml` index rather than
+folded into XML.
 
 ## `sms-*.xml` (`<smses>`)
 
@@ -45,12 +50,13 @@ by the `media-*.xml` index rather than folded into XML.
 `date` is epoch **milliseconds**; `duration` is **seconds**. `type`: 1=incoming,
 2=outgoing, 3=missed, 4=voicemail, 5=rejected, 6=blocked.
 
-## `media-*.xml` (`<medias>`, Diffuse-specific)
+## `photos-*.xml` / `videos-*.xml` (`<medias>`, Diffuse-specific)
 
 `<media kind id display_name relative_path mime_type size date_taken date_added
 date_modified generation_modified backup_path>`. All timestamps are epoch **ms** in the
-index (normalised from the provider's mixed units). `backup_path` is where the bytes were
-copied under `media/`.
+index (normalised from the provider's mixed units). `backup_path` is where the bytes
+landed on Drive under `media/`. Split into two documents (one all `kind="images"`, one all
+`kind="video"`) so each streams and reports progress independently.
 
 ## Notes / provenance
 

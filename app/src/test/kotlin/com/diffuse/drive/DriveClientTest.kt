@@ -107,6 +107,29 @@ class DriveClientTest {
         assertEquals(null, DriveClient(bad, FakeTokens()).accountEmail())
     }
 
+    @Test fun listAllFileIds_pages_through_results() {
+        var call = 0
+        val http = FakeHttp { req ->
+            call++
+            val decoded = java.net.URLDecoder.decode(req.url, "UTF-8")
+            assertTrue("folders must be excluded from the query", "mimeType!=" in decoded)
+            if ("pageToken" !in decoded) {
+                HttpResp(200, """{"nextPageToken":"p2","files":[{"id":"A"},{"id":"B"}]}""")
+            } else {
+                assertTrue("pageToken=p2" in decoded)
+                HttpResp(200, """{"files":[{"id":"C"}]}""")
+            }
+        }
+        val ids = DriveClient(http, FakeTokens()).listAllFileIds()
+        assertEquals(setOf("A", "B", "C"), ids)
+        assertEquals(2, call)
+    }
+
+    @Test fun listAllFileIds_empty_when_nothing_on_drive() {
+        val http = FakeHttp { HttpResp(200, """{"files":[]}""") }
+        assertTrue(DriveClient(http, FakeTokens()).listAllFileIds().isEmpty())
+    }
+
     @Test fun on_401_it_refreshes_and_retries_with_new_token() {
         val tokens = FakeTokens(token = "stale", refreshed = "fresh")
         var calls = 0

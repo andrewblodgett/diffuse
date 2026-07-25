@@ -11,6 +11,9 @@ import java.util.Properties
 interface TokenStore {
     fun get(sourceId: String): Long?
     fun put(sourceId: String, token: Long)
+
+    /** Forget [sourceId]'s token, so the next run re-derives it from scratch (as if new). */
+    fun clear(sourceId: String)
 }
 
 /**
@@ -30,6 +33,12 @@ class FilePropertiesTokenStore(private val file: File) : TokenStore {
 
     override fun put(sourceId: String, token: Long) {
         props.setProperty(key(sourceId), token.toString())
+        file.parentFile?.mkdirs()
+        file.outputStream().use { props.store(it, "Diffuse incremental backup tokens") }
+    }
+
+    override fun clear(sourceId: String) {
+        if (props.remove(key(sourceId)) == null) return
         file.parentFile?.mkdirs()
         file.outputStream().use { props.store(it, "Diffuse incremental backup tokens") }
     }

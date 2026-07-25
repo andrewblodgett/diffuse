@@ -40,14 +40,22 @@ class BackupWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
 
         setForeground(foregroundInfo("Starting…"))
         val progress = object : BackupProgress {
-            private var lastNotified = -1
+            private var lastPhotoNotified = -1
+            private var lastVideoNotified = -1
             override fun onStage(stage: BackupStage) = notifier.notifyProgress(label(stage))
-            override fun onMediaProgress(done: Int, total: Int) {
+            override fun onPhotoProgress(done: Int, total: Int) {
                 // Throttle: update at most ~every 1% (or the final item) to avoid notification spam.
                 val pct = if (total > 0) done * 100 / total else 0
-                if (pct != lastNotified || done == total) {
-                    lastNotified = pct
-                    notifier.notifyProgress("Backing up photos & videos", done, total)
+                if (pct != lastPhotoNotified || done == total) {
+                    lastPhotoNotified = pct
+                    notifier.notifyProgress("Backing up photos", done, total)
+                }
+            }
+            override fun onVideoProgress(done: Int, total: Int) {
+                val pct = if (total > 0) done * 100 / total else 0
+                if (pct != lastVideoNotified || done == total) {
+                    lastVideoNotified = pct
+                    notifier.notifyProgress("Backing up videos", done, total)
                 }
             }
         }
@@ -80,10 +88,10 @@ class BackupWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
     }
 
     private fun label(stage: BackupStage): String = when (stage) {
+        BackupStage.Calls -> "Backing up call log…"
         BackupStage.Messages -> "Backing up messages…"
-        BackupStage.Calls -> "Backing up calls…"
-        BackupStage.Media -> "Backing up photos & videos…"
-        BackupStage.UploadingIndex -> "Finishing up…"
+        BackupStage.Photos -> "Backing up photos…"
+        BackupStage.Videos -> "Backing up videos…"
         BackupStage.Complete -> "Done"
     }
 

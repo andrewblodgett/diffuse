@@ -115,13 +115,21 @@ fun HomeScreen(controller: BackupController, onOpenSettings: () -> Unit, onConne
                 controller.stageText?.let {
                     LightText(text = it, variant = Body, align = TextAlign.Center)
                 }
-                if (controller.mediaTotal > 0) {
+                if (controller.photoTotal > 0) {
                     LightText(
-                        text = "${controller.mediaDone} / ${controller.mediaTotal} photos & videos",
+                        text = "${controller.photoDone} / ${controller.photoTotal} photos",
                         variant = Body,
                         align = TextAlign.Center,
                     )
-                    ProgressBar(controller.mediaDone.toFloat() / controller.mediaTotal)
+                    ProgressBar(controller.photoDone.toFloat() / controller.photoTotal)
+                }
+                if (controller.videoTotal > 0) {
+                    LightText(
+                        text = "${controller.videoDone} / ${controller.videoTotal} videos",
+                        variant = Body,
+                        align = TextAlign.Center,
+                    )
+                    ProgressBar(controller.videoDone.toFloat() / controller.videoTotal)
                 }
             }
 

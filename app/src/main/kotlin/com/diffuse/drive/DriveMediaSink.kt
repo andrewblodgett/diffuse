@@ -11,7 +11,7 @@ import java.io.InputStream
  * is opened read-only and piped into a resumable/simple upload; peak memory is one copy buffer.
  *
  * Idempotent like the rest of the pipeline: anything already recorded in [manifest] (keyed by
- * the archive-relative `backupPath`, exactly as [DriveUploader] keyed local files) is skipped,
+ * the archive-relative `backupPath`, exactly as [DriveFileSink] keys XML docs) is skipped,
  * so re-runs never re-upload and existing manifests keep working after the switch to streaming.
  *
  * The Android coupling is two seams: [openStream] turns a record's `contentUri` into a

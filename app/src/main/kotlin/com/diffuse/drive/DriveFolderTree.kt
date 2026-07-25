@@ -3,7 +3,7 @@ package com.diffuse.drive
 /**
  * Resolves (find-or-create) and caches the Drive folder id for an archive-relative directory,
  * mirroring the archive's `media/<relative_path>/…` tree into Drive on demand. Shared by
- * [DriveUploader] (the XML docs at the archive root) and [DriveMediaSink] (streamed media),
+ * [DriveFileSink] (the XML docs at the archive root) and [DriveMediaSink] (streamed media),
  * so both agree on the same folders and never create duplicates.
  *
  * The empty relative dir `""` maps to [rootId] — the `Diffuse` folder. Every intermediate

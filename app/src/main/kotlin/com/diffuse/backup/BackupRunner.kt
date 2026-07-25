@@ -34,16 +34,22 @@ data class BackupSummary(
 
 /**
  * Runs a full or incremental extraction of every source into a local SMS Backup &
- * Restore-compatible archive under [outputDir]. This is the end of Phase 2: it produces
- * the on-disk standard format and touches **nothing** in the cloud — Phase 3 uploads
- * [outputDir] to Drive.
+ * Restore-compatible archive under [outputDir], uploading each document via [fileSink]
+ * (production: straight to Drive) the moment it's finished — always in the same order:
+ * **call log, then messages, then photos, then videos**. That fixed order is what the
+ * progress UI announces via [progress], so what it says and what's actually uploading always
+ * agree (a real bug: an earlier version wrote all the XML docs first and uploaded them in a
+ * separate alphabetical-filename sweep afterward, so the UI said "messages" while the network
+ * was actually sending something else, and text data uploaded last regardless of the order
+ * announced).
  *
  * Layout produced:
  * ```
  * outputDir/
- *   sms-<ts>.xml     # <smses> with <sms> + <mms> (attachments inline base64)
- *   calls-<ts>.xml   # <calls>
- *   media-<ts>.xml   # <medias> index (references the media/<relative_path>/<name> paths)
+ *   calls-<ts>.xml    # <calls>
+ *   sms-<ts>.xml      # <smses> with <sms> + <mms> (attachments inline base64)
+ *   photos-<ts>.xml   # <medias> index for images (references media/<relative_path>/<name>)
+ *   videos-<ts>.xml   # <medias> index for video, same shape
  * ```
  *
  * Media *originals* are no longer copied under [outputDir] — each is handed to [mediaSink],
@@ -51,7 +57,7 @@ data class BackupSummary(
  * [com.diffuse.drive.DriveMediaSink]); only the small index XML is written locally. This keeps
  * peak on-device disk to a copy buffer instead of a second copy of the whole media library.
  *
- * READ-ONLY: every source reads its provider; the only writes are to files under
+ * READ-ONLY: every source reads its provider; the only local writes are to files under
  * [outputDir] (our own sandbox), which is not a provider mutation.
  */
 class BackupRunner(
@@ -59,6 +65,7 @@ class BackupRunner(
     private val outputDir: File,
     private val tokens: TokenStore,
     private val mediaSink: MediaSink = MediaSink.NONE,
+    private val fileSink: FileSink = FileSink.NONE,
     private val progress: BackupProgress = BackupProgress.NONE,
     private val content: BackupContent = BackupContent(),
     private val sms: SmsSource = SmsSource(resolver),
@@ -83,9 +90,23 @@ class BackupRunner(
         var nImg = 0
         var nVid = 0
 
-        // --- Messages + calls: gated together by the "text & call history" choice ----
+        // Messages and calls are gated by the same "text & call history" choice, but uploaded
+        // as two separate documents, call log first.
         if (content.messages) {
-            // SMS + MMS share one <smses> document.
+            progress.onStage(BackupStage.Calls)
+            val callSince = if (incremental) tokens.get(calls.id) else null
+            val nextCallToken = calls.currentToken()
+            nCall = calls.countSince(callSince)
+            val callsFile = File(outputDir, "calls-$stamp.xml")
+            callsFile.bufferedWriter().use { w ->
+                val writer = CallLogXmlWriter(w, backupDateMs, backupSet)
+                writer.start(nCall)
+                calls.itemsSince(callSince).collect { writer.writeCall(it as CallRecord) }
+                writer.finish()
+            }
+            tokens.put(calls.id, nextCallToken)
+            fileSink.put(callsFile, callsFile.name)
+
             progress.onStage(BackupStage.Messages)
             val smsSince = if (incremental) tokens.get(sms.id) else null
             val mmsSince = if (incremental) tokens.get(mms.id) else null
@@ -93,7 +114,8 @@ class BackupRunner(
             val nextMmsToken = mms.currentToken()
             nSms = sms.countSince(smsSince)
             nMms = mms.countSince(mmsSince)
-            File(outputDir, "sms-$stamp.xml").bufferedWriter().use { w ->
+            val smsFile = File(outputDir, "sms-$stamp.xml")
+            smsFile.bufferedWriter().use { w ->
                 val writer = SmsBackupXmlWriter(w, backupDateMs, backupSet)
                 writer.start(nSms + nMms)
                 sms.itemsSince(smsSince).collect { writer.writeSms(it as SmsRecord) }
@@ -102,42 +124,41 @@ class BackupRunner(
             }
             tokens.put(sms.id, nextSmsToken)
             tokens.put(mms.id, nextMmsToken)
-
-            // Call log.
-            progress.onStage(BackupStage.Calls)
-            val callSince = if (incremental) tokens.get(calls.id) else null
-            val nextCallToken = calls.currentToken()
-            nCall = calls.countSince(callSince)
-            File(outputDir, "calls-$stamp.xml").bufferedWriter().use { w ->
-                val writer = CallLogXmlWriter(w, backupDateMs, backupSet)
-                writer.start(nCall)
-                calls.itemsSince(callSince).collect { writer.writeCall(it as CallRecord) }
-                writer.finish()
-            }
-            tokens.put(calls.id, nextCallToken)
+            fileSink.put(smsFile, smsFile.name)
         }
 
-        // --- Media: stream originals to the sink + write an index -------------------
-        // Each media kind is gated independently; the index is written only when at least one is on.
-        if (content.pictures || content.videos) {
-            File(outputDir, "media-$stamp.xml").bufferedWriter().use { w ->
-                val imgSince = if (incremental) tokens.get(images.id) else null
-                val vidSince = if (incremental) tokens.get(video.id) else null
-                nImg = if (content.pictures) images.countSince(imgSince) else 0
-                nVid = if (content.videos) video.countSince(vidSince) else 0
-                progress.onStage(BackupStage.Media)
-                val mediaTotal = nImg + nVid
-                var mediaDone = 0
+        // Photos, then videos — each kind gated independently, own document, own progress.
+        if (content.pictures) {
+            progress.onStage(BackupStage.Photos)
+            val imgSince = if (incremental) tokens.get(images.id) else null
+            nImg = images.countSince(imgSince)
+            val photosFile = File(outputDir, "photos-$stamp.xml")
+            photosFile.bufferedWriter().use { w ->
                 val writer = MediaIndexXmlWriter(w, backupDateMs, backupSet)
-                writer.start(mediaTotal)
-                val onOne = { progress.onMediaProgress(++mediaDone, mediaTotal) }
-                if (content.pictures) backupMediaSource(images, imgSince, writer, onOne)
-                if (content.videos) backupMediaSource(video, vidSince, writer, onOne)
+                writer.start(nImg)
+                var done = 0
+                backupMediaSource(images, imgSince, writer) { progress.onPhotoProgress(++done, nImg) }
                 writer.finish()
             }
+            fileSink.put(photosFile, photosFile.name)
         }
 
-        progress.onStage(BackupStage.UploadingIndex)
+        if (content.videos) {
+            progress.onStage(BackupStage.Videos)
+            val vidSince = if (incremental) tokens.get(video.id) else null
+            nVid = video.countSince(vidSince)
+            val videosFile = File(outputDir, "videos-$stamp.xml")
+            videosFile.bufferedWriter().use { w ->
+                val writer = MediaIndexXmlWriter(w, backupDateMs, backupSet)
+                writer.start(nVid)
+                var done = 0
+                backupMediaSource(video, vidSince, writer) { progress.onVideoProgress(++done, nVid) }
+                writer.finish()
+            }
+            fileSink.put(videosFile, videosFile.name)
+        }
+
+        progress.onStage(BackupStage.Complete)
         BackupSummary(nSms, nMms, nCall, nImg, nVid, outputDir.absolutePath)
     }
 

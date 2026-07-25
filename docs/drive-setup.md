@@ -56,8 +56,9 @@ button just reports that credentials are missing.
 3. Scan it with any other device, sign in, tap **Allow**. The phone finishes
    automatically and stores an encrypted refresh token — you won't sign in again.
 4. Tap **Back up now** → grant the read permissions → a **Diffuse** folder appears
-   in your Drive with the archive (`sms-*.xml`, `calls-*.xml`, `media-*.xml`, and
-   a `media/` subtree). Re-running skips files already uploaded.
+   in your Drive with the archive (`calls-*.xml`, `sms-*.xml`, `photos-*.xml`,
+   `videos-*.xml`, and a `media/` subtree), uploaded in that order. Re-running skips
+   files already uploaded.
 
 ## Notes
 
