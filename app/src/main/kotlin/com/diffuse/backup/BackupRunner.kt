@@ -60,6 +60,7 @@ class BackupRunner(
     private val tokens: TokenStore,
     private val mediaSink: MediaSink = MediaSink.NONE,
     private val progress: BackupProgress = BackupProgress.NONE,
+    private val content: BackupContent = BackupContent(),
     private val sms: SmsSource = SmsSource(resolver),
     private val mms: MmsSource = MmsSource(resolver),
     private val calls: CallLogSource = CallLogSource(resolver),
@@ -76,58 +77,64 @@ class BackupRunner(
         val backupDateMs = System.currentTimeMillis()
         val backupSet = UUID.randomUUID().toString()
 
-        val nSms: Int
-        val nMms: Int
-        val nCall: Int
-        val nImg: Int
-        val nVid: Int
+        var nSms = 0
+        var nMms = 0
+        var nCall = 0
+        var nImg = 0
+        var nVid = 0
 
-        // --- Messages: SMS + MMS share one <smses> document ---------------------
-        progress.onStage(BackupStage.Messages)
-        val smsSince = if (incremental) tokens.get(sms.id) else null
-        val mmsSince = if (incremental) tokens.get(mms.id) else null
-        val nextSmsToken = sms.currentToken()
-        val nextMmsToken = mms.currentToken()
-        nSms = sms.countSince(smsSince)
-        nMms = mms.countSince(mmsSince)
-        File(outputDir, "sms-$stamp.xml").bufferedWriter().use { w ->
-            val writer = SmsBackupXmlWriter(w, backupDateMs, backupSet)
-            writer.start(nSms + nMms)
-            sms.itemsSince(smsSince).collect { writer.writeSms(it as SmsRecord) }
-            mms.itemsSince(mmsSince).collect { writer.writeMms(it as MmsRecord) }
-            writer.finish()
+        // --- Messages + calls: gated together by the "text & call history" choice ----
+        if (content.messages) {
+            // SMS + MMS share one <smses> document.
+            progress.onStage(BackupStage.Messages)
+            val smsSince = if (incremental) tokens.get(sms.id) else null
+            val mmsSince = if (incremental) tokens.get(mms.id) else null
+            val nextSmsToken = sms.currentToken()
+            val nextMmsToken = mms.currentToken()
+            nSms = sms.countSince(smsSince)
+            nMms = mms.countSince(mmsSince)
+            File(outputDir, "sms-$stamp.xml").bufferedWriter().use { w ->
+                val writer = SmsBackupXmlWriter(w, backupDateMs, backupSet)
+                writer.start(nSms + nMms)
+                sms.itemsSince(smsSince).collect { writer.writeSms(it as SmsRecord) }
+                mms.itemsSince(mmsSince).collect { writer.writeMms(it as MmsRecord) }
+                writer.finish()
+            }
+            tokens.put(sms.id, nextSmsToken)
+            tokens.put(mms.id, nextMmsToken)
+
+            // Call log.
+            progress.onStage(BackupStage.Calls)
+            val callSince = if (incremental) tokens.get(calls.id) else null
+            val nextCallToken = calls.currentToken()
+            nCall = calls.countSince(callSince)
+            File(outputDir, "calls-$stamp.xml").bufferedWriter().use { w ->
+                val writer = CallLogXmlWriter(w, backupDateMs, backupSet)
+                writer.start(nCall)
+                calls.itemsSince(callSince).collect { writer.writeCall(it as CallRecord) }
+                writer.finish()
+            }
+            tokens.put(calls.id, nextCallToken)
         }
-        tokens.put(sms.id, nextSmsToken)
-        tokens.put(mms.id, nextMmsToken)
 
-        // --- Call log -----------------------------------------------------------
-        progress.onStage(BackupStage.Calls)
-        val callSince = if (incremental) tokens.get(calls.id) else null
-        val nextCallToken = calls.currentToken()
-        nCall = calls.countSince(callSince)
-        File(outputDir, "calls-$stamp.xml").bufferedWriter().use { w ->
-            val writer = CallLogXmlWriter(w, backupDateMs, backupSet)
-            writer.start(nCall)
-            calls.itemsSince(callSince).collect { writer.writeCall(it as CallRecord) }
-            writer.finish()
-        }
-        tokens.put(calls.id, nextCallToken)
-
-        // --- Media: stream originals to the sink + write an index ---------------
-        File(outputDir, "media-$stamp.xml").bufferedWriter().use { w ->
-            val imgSince = if (incremental) tokens.get(images.id) else null
-            val vidSince = if (incremental) tokens.get(video.id) else null
-            nImg = images.countSince(imgSince)
-            nVid = video.countSince(vidSince)
-            progress.onStage(BackupStage.Media)
-            val mediaTotal = nImg + nVid
-            var mediaDone = 0
-            val writer = MediaIndexXmlWriter(w, backupDateMs, backupSet)
-            writer.start(mediaTotal)
-            val onOne = { progress.onMediaProgress(++mediaDone, mediaTotal) }
-            backupMediaSource(images, imgSince, writer, onOne)
-            backupMediaSource(video, vidSince, writer, onOne)
-            writer.finish()
+        // --- Media: stream originals to the sink + write an index -------------------
+        // Each media kind is gated independently; the index is written only when at least one is on.
+        if (content.pictures || content.videos) {
+            File(outputDir, "media-$stamp.xml").bufferedWriter().use { w ->
+                val imgSince = if (incremental) tokens.get(images.id) else null
+                val vidSince = if (incremental) tokens.get(video.id) else null
+                nImg = if (content.pictures) images.countSince(imgSince) else 0
+                nVid = if (content.videos) video.countSince(vidSince) else 0
+                progress.onStage(BackupStage.Media)
+                val mediaTotal = nImg + nVid
+                var mediaDone = 0
+                val writer = MediaIndexXmlWriter(w, backupDateMs, backupSet)
+                writer.start(mediaTotal)
+                val onOne = { progress.onMediaProgress(++mediaDone, mediaTotal) }
+                if (content.pictures) backupMediaSource(images, imgSince, writer, onOne)
+                if (content.videos) backupMediaSource(video, vidSince, writer, onOne)
+                writer.finish()
+            }
         }
 
         progress.onStage(BackupStage.UploadingIndex)

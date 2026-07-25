@@ -136,6 +136,15 @@ class BackupController(context: Context) {
         }
     }
 
+    /** Forget the Drive connection and return the home screen to its pre-sign-in state. */
+    fun signOut() {
+        engine.signOut()
+        connected = false
+        phase = Phase.Idle
+        message = null
+        resetSignIn()
+    }
+
     /** Called by the UI when the user declines the required read permissions. */
     fun onPermissionsDenied() {
         phase = Phase.Error

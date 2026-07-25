@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,10 +63,9 @@ private val REQUIRED_PERMISSIONS = buildList {
  * Settings. Driven by [BackupController]; styling reuses the vendored Light theme.
  */
 @Composable
-fun HomeScreen(onOpenSettings: () -> Unit) {
+fun HomeScreen(controller: BackupController, onOpenSettings: () -> Unit) {
     val colors = LightThemeTokens.colors
     val context = LocalContext.current
-    val controller = remember { BackupController(context) }
     val scope = rememberCoroutineScope()
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -103,9 +101,9 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) {
         Column(
-            modifier = Modifier.padding(24.dp),
+            modifier = Modifier.padding(horizontal = 28.dp, vertical = 40.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            verticalArrangement = Arrangement.spacedBy(32.dp),
         ) {
             LightText(text = "Diffuse", variant = LightTextVariant.Heading, align = TextAlign.Center)
             LightText(

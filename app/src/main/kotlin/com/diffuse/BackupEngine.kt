@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import com.diffuse.backup.BackupProgress
 import com.diffuse.backup.BackupRunner
+import com.diffuse.work.BackupSettings
 import com.diffuse.backup.store.FilePropertiesTokenStore
 import com.diffuse.backup.store.LastRun
 import com.diffuse.backup.store.LastRunStore
@@ -44,9 +45,13 @@ class BackupEngine(context: Context) {
     private val uploader = DriveUploader(driveClient, manifest)
     private val tokenStore = FilePropertiesTokenStore(File(app.filesDir, "backup-tokens.properties"))
     private val lastRunStore = LastRunStore(File(app.filesDir, "last-run.properties"))
+    private val settings = BackupSettings(app)
 
     /** True once a Drive refresh token is stored (the QR sign-in completed at least once). */
     val isConnected: Boolean get() = credentialStore.isConnected
+
+    /** Forget the stored Drive credentials — the user must re-scan the QR to reconnect. */
+    fun signOut() = credentialStore.clear()
 
     /** False when the build has no Drive client id (see docs/drive-setup.md). */
     val credentialsConfigured: Boolean get() = BuildConfig.DRIVE_CLIENT_ID.isNotBlank()
@@ -85,7 +90,10 @@ class BackupEngine(context: Context) {
             folders = DriveFolderTree(driveClient, rootId),
             manifest = manifest,
         )
-        val runner = BackupRunner(app.contentResolver, outputDir, tokenStore, mediaSink, progress)
+        val runner = BackupRunner(
+            app.contentResolver, outputDir, tokenStore, mediaSink, progress,
+            content = settings.prefsValue.content,
+        )
         val s = runner.run(incremental = true)
         uploader.upload(outputDir)
 
