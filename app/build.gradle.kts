@@ -1,8 +1,22 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
 }
+
+// Google OAuth "TVs and Limited Input devices" client credentials. These identify
+// the *app* to Google (not the user) and are the same for every install; for a
+// sideloaded personal app they are not true secrets, but we still keep them out of
+// git by reading from local.properties (which is git-ignored). Empty defaults let
+// the project build and unit-test with no creds — see docs/drive-setup.md.
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+fun creds(key: String): String = (localProps.getProperty(key) ?: "").let { "\"$it\"" }
 
 android {
     namespace = "com.diffuse"
@@ -13,7 +27,10 @@ android {
         minSdk = 33
         targetSdk = 34
         versionCode = 1
-        versionName = "0.1.0-phase1"
+        versionName = "0.1.0-phase3"
+
+        buildConfigField("String", "DRIVE_CLIENT_ID", creds("DRIVE_CLIENT_ID"))
+        buildConfigField("String", "DRIVE_CLIENT_SECRET", creds("DRIVE_CLIENT_SECRET"))
     }
 
     buildTypes {
@@ -28,6 +45,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     compileOptions {
@@ -57,4 +75,13 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.kotlinx.coroutines.android)
+
+    // Phase 3 — Google Drive upload
+    implementation(libs.okhttp)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.zxing.core)
+    implementation(libs.androidx.security.crypto)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

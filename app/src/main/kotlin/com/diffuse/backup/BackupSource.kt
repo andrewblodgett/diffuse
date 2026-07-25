@@ -1,5 +1,6 @@
 package com.diffuse.backup
 
+import com.diffuse.backup.model.BackupItem
 import kotlinx.coroutines.flow.Flow
 
 /**
