@@ -1,5 +1,6 @@
 package com.diffuse.drive
 
+import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -7,7 +8,10 @@ import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.BufferedSink
+import okio.source
 import java.io.File
+import java.io.InputStream
 import java.util.concurrent.TimeUnit
 
 /**
@@ -49,6 +53,25 @@ interface Http {
             val file: File,
             val mediaContentType: String,
         ) : Body
+        /**
+         * Like [FileBody] but streamed from a content provider (or any source) rather than a
+         * file on disk — [open] yields a fresh [InputStream] each time it's called (OkHttp may
+         * re-read the body on retry), and [length] is the known content length. Nothing is
+         * buffered in memory, so a multi-GB video streams provider→Drive with a copy of ~64 KB.
+         * READ-ONLY: [open] opens the provider stream in read ("r") mode; this never writes back.
+         */
+        class StreamBody(
+            val open: () -> InputStream,
+            val length: Long,
+            val contentType: String,
+        ) : Body
+        /** [RelatedFile] with the media part streamed from [open] (see [StreamBody]). */
+        class RelatedStream(
+            val metadataJson: String,
+            val open: () -> InputStream,
+            val length: Long,
+            val mediaContentType: String,
+        ) : Body
     }
 }
 
@@ -85,6 +108,13 @@ class OkHttpHttp(
                 .addPart(body.metadataJson.toRequestBody(JSON.toMediaType()))
                 .addPart(body.file.asRequestBody(body.mediaContentType.toMediaType()))
                 .build()
+            is Http.Body.StreamBody ->
+                StreamRequestBody(body.open, body.length, body.contentType.toMediaType())
+            is Http.Body.RelatedStream -> MultipartBody.Builder()
+                .setType("multipart/related".toMediaType())
+                .addPart(body.metadataJson.toRequestBody(JSON.toMediaType()))
+                .addPart(StreamRequestBody(body.open, body.length, body.mediaContentType.toMediaType()))
+                .build()
         }
         val builder = Request.Builder().url(url).method(method, reqBody)
         headers.forEach { (k, v) -> builder.header(k, v) }
@@ -95,6 +125,23 @@ class OkHttpHttp(
     }
 
     private fun enc(s: String) = java.net.URLEncoder.encode(s, "UTF-8")
+
+    /**
+     * Streams a request body from a re-openable source with a known length. [writeTo] can be
+     * called more than once (OkHttp retries), so it re-opens the stream each time and copies
+     * straight into the network sink — the bytes are never held in memory.
+     */
+    private class StreamRequestBody(
+        private val open: () -> InputStream,
+        private val length: Long,
+        private val mediaType: MediaType,
+    ) : RequestBody() {
+        override fun contentType(): MediaType = mediaType
+        override fun contentLength(): Long = length
+        override fun writeTo(sink: BufferedSink) {
+            open().use { input -> sink.writeAll(input.source()) }
+        }
+    }
 
     private companion object {
         const val FORM = "application/x-www-form-urlencoded"

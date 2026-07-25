@@ -27,9 +27,16 @@
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
 
-    <!-- Network (for Google Drive upload in a later phase). Not local-data access. -->
+    <!-- Network (for Google Drive upload). Not local-data access. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Backup UX / scheduling. None of these grant access to user data; they let the
+         scheduled backup run as a foreground data-sync job and post progress/result
+         notifications. No WRITE/MANAGE/role permission here — the read-only guard forbids it. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:allowBackup="false"

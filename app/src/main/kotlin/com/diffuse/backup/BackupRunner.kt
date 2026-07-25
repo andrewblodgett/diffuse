@@ -1,7 +1,7 @@
 package com.diffuse.backup
 
 import android.content.ContentResolver
-import android.net.Uri
+import android.util.Log
 import com.diffuse.backup.format.CallLogXmlWriter
 import com.diffuse.backup.format.MediaIndexXmlWriter
 import com.diffuse.backup.format.SmsBackupXmlWriter
@@ -43,9 +43,13 @@ data class BackupSummary(
  * outputDir/
  *   sms-<ts>.xml     # <smses> with <sms> + <mms> (attachments inline base64)
  *   calls-<ts>.xml   # <calls>
- *   media-<ts>.xml   # <medias> index
- *   media/<relative_path>/<name>   # photo/video originals, copied byte-for-byte
+ *   media-<ts>.xml   # <medias> index (references the media/<relative_path>/<name> paths)
  * ```
+ *
+ * Media *originals* are no longer copied under [outputDir] — each is handed to [mediaSink],
+ * which in production streams it straight provider→Drive (see
+ * [com.diffuse.drive.DriveMediaSink]); only the small index XML is written locally. This keeps
+ * peak on-device disk to a copy buffer instead of a second copy of the whole media library.
  *
  * READ-ONLY: every source reads its provider; the only writes are to files under
  * [outputDir] (our own sandbox), which is not a provider mutation.
@@ -54,6 +58,8 @@ class BackupRunner(
     private val resolver: ContentResolver,
     private val outputDir: File,
     private val tokens: TokenStore,
+    private val mediaSink: MediaSink = MediaSink.NONE,
+    private val progress: BackupProgress = BackupProgress.NONE,
     private val sms: SmsSource = SmsSource(resolver),
     private val mms: MmsSource = MmsSource(resolver),
     private val calls: CallLogSource = CallLogSource(resolver),
@@ -77,6 +83,7 @@ class BackupRunner(
         val nVid: Int
 
         // --- Messages: SMS + MMS share one <smses> document ---------------------
+        progress.onStage(BackupStage.Messages)
         val smsSince = if (incremental) tokens.get(sms.id) else null
         val mmsSince = if (incremental) tokens.get(mms.id) else null
         val nextSmsToken = sms.currentToken()
@@ -94,6 +101,7 @@ class BackupRunner(
         tokens.put(mms.id, nextMmsToken)
 
         // --- Call log -----------------------------------------------------------
+        progress.onStage(BackupStage.Calls)
         val callSince = if (incremental) tokens.get(calls.id) else null
         val nextCallToken = calls.currentToken()
         nCall = calls.countSince(callSince)
@@ -105,41 +113,79 @@ class BackupRunner(
         }
         tokens.put(calls.id, nextCallToken)
 
-        // --- Media: copy originals + write an index -----------------------------
-        val mediaDir = File(outputDir, "media").apply { mkdirs() }
+        // --- Media: stream originals to the sink + write an index ---------------
         File(outputDir, "media-$stamp.xml").bufferedWriter().use { w ->
             val imgSince = if (incremental) tokens.get(images.id) else null
             val vidSince = if (incremental) tokens.get(video.id) else null
-            val nextImgToken = images.currentToken()
-            val nextVidToken = video.currentToken()
             nImg = images.countSince(imgSince)
             nVid = video.countSince(vidSince)
+            progress.onStage(BackupStage.Media)
+            val mediaTotal = nImg + nVid
+            var mediaDone = 0
             val writer = MediaIndexXmlWriter(w, backupDateMs, backupSet)
-            writer.start(nImg + nVid)
-            images.itemsSince(imgSince).collect { copyAndIndex(it as MediaRecord, mediaDir, writer) }
-            video.itemsSince(vidSince).collect { copyAndIndex(it as MediaRecord, mediaDir, writer) }
+            writer.start(mediaTotal)
+            val onOne = { progress.onMediaProgress(++mediaDone, mediaTotal) }
+            backupMediaSource(images, imgSince, writer, onOne)
+            backupMediaSource(video, vidSince, writer, onOne)
             writer.finish()
-            tokens.put(images.id, nextImgToken)
-            tokens.put(video.id, nextVidToken)
         }
 
+        progress.onStage(BackupStage.UploadingIndex)
         BackupSummary(nSms, nMms, nCall, nImg, nVid, outputDir.absolutePath)
     }
 
-    /** Copies one media file's bytes into [mediaDir] (READ-ONLY read of the provider). */
-    private fun copyAndIndex(r: MediaRecord, mediaDir: File, writer: MediaIndexXmlWriter) {
+    /**
+     * Streams every new item of one media [source] to the sink, indexing each, then advances the
+     * source's token **only through the contiguous run of successes**. Items arrive in
+     * `generation_modified` ASC order, so on the first failure we stop advancing: everything from
+     * that item onward is retried next run instead of being silently skipped forever (the token
+     * used to jump to the current max regardless, which permanently lost any failed upload). The
+     * upload manifest makes the retried successes idempotent, so this never re-uploads.
+     */
+    private suspend fun backupMediaSource(
+        source: MediaSource,
+        since: Long?,
+        writer: MediaIndexXmlWriter,
+        onProgress: () -> Unit,
+    ) {
+        val fullyCaughtUp = source.currentToken() // max generation right now
+        var highWater: Long? = since
+        var failed = false
+        source.itemsSince(since).collect { item ->
+            val r = item as MediaRecord
+            if (sinkAndIndex(r, writer)) {
+                if (!failed) highWater = r.generationModified
+            } else {
+                failed = true
+            }
+            onProgress()
+        }
+        val newToken = if (!failed) fullyCaughtUp else highWater
+        if (newToken != null) tokens.put(source.id, newToken)
+    }
+
+    /**
+     * Hands one media original's bytes to [mediaSink] (which reads the provider stream
+     * READ-ONLY and, in production, streams it to Drive), then records it in the index.
+     * Returns true on success. A single failed item is logged and skipped (returns false) so it
+     * never aborts the whole backup and, via [backupMediaSource], gets retried next run instead
+     * of being lost.
+     */
+    private fun sinkAndIndex(r: MediaRecord, writer: MediaIndexXmlWriter): Boolean {
         val relDir = (r.relativePath ?: "").trim('/')
         val name = r.displayName?.takeIf { it.isNotBlank() } ?: r.id.toString()
-        val dest = File(File(mediaDir, relDir), name)
         val backupPath = "media/" + (if (relDir.isEmpty()) name else "$relDir/$name")
-        try {
-            dest.parentFile?.mkdirs()
-            resolver.openInputStream(Uri.parse(r.contentUri))?.use { input ->
-                dest.outputStream().use { output -> input.copyTo(output) }
-            }
+        return try {
+            mediaSink.put(r, backupPath)
             writer.writeMedia(r, backupPath)
+            true
         } catch (e: Exception) {
-            // A single unreadable item shouldn't abort the whole backup; skip and continue.
+            Log.w(TAG, "media ${r.stableId} (gen ${r.generationModified}) skipped, will retry: ${e.message}")
+            false
         }
+    }
+
+    private companion object {
+        const val TAG = "DiffuseBackup"
     }
 }

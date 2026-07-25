@@ -22,6 +22,9 @@ class DriveUploaderTest {
         override fun upload(name: String, parentId: String, mimeType: String, file: File): String {
             uploads.add("$name@$parentId"); return "file${seq++}"
         }
+        override fun upload(name: String, parentId: String, mimeType: String, length: Long, open: () -> java.io.InputStream): String {
+            uploads.add("$name@$parentId"); return "file${seq++}"
+        }
     }
 
     private fun archive(): File {

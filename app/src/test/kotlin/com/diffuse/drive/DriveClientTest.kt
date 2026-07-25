@@ -67,6 +67,37 @@ class DriveClientTest {
         assertTrue("uploadType=multipart" in http.requests.single().url)
     }
 
+    @Test fun stream_upload_routes_small_to_simple_and_large_to_resumable() {
+        val seen = mutableListOf<String>()
+        val http = FakeHttp { req ->
+            when {
+                "uploadType=multipart" in req.url -> { seen += "simple"; HttpResp(200, """{"id":"S"}""") }
+                "uploadType=resumable" in req.url -> {
+                    // The init advertises the streamed length up-front (no local file to size).
+                    assertEquals("50", req.headers["X-Upload-Content-Length"])
+                    seen += "resumable-init"
+                    HttpResp(200, "", mapOf("Location" to "https://upload/session"))
+                }
+                req.url == "https://upload/session" -> { seen += "resumable-put"; HttpResp(200, """{"id":"L"}""") }
+                else -> HttpResp(404, "")
+            }
+        }
+        val client = DriveClient(http, FakeTokens(), resumableThresholdBytes = 10)
+        val open = { java.io.ByteArrayInputStream(ByteArray(4)) as java.io.InputStream }
+        assertEquals("S", client.upload("s.bin", "P", "application/octet-stream", 4L, open))
+        assertEquals("L", client.upload("l.bin", "P", "application/octet-stream", 50L, open))
+        assertEquals(listOf("simple", "resumable-init", "resumable-put"), seen)
+    }
+
+    @Test fun stream_simple_upload_sends_related_stream_body_with_length() {
+        val http = FakeHttp { HttpResp(200, """{"id":"S"}""") }
+        DriveClient(http, FakeTokens())
+            .upload("s.bin", "P", "application/octet-stream", 2L) { java.io.ByteArrayInputStream(ByteArray(2)) }
+        val body = http.requests.single().body
+        assertTrue(body is Http.Body.RelatedStream)
+        assertEquals(2L, (body as Http.Body.RelatedStream).length)
+    }
+
     @Test fun on_401_it_refreshes_and_retries_with_new_token() {
         val tokens = FakeTokens(token = "stale", refreshed = "fresh")
         var calls = 0

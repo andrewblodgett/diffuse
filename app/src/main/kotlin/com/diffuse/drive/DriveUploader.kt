@@ -13,14 +13,17 @@ data class UploadSummary(
 )
 
 /**
- * Mirrors the local archive tree produced by [com.diffuse.backup.BackupRunner] into a
- * `Diffuse` folder on Drive: the timestamped `*.xml` documents at the top level and the
- * `media/<relative_path>/…` originals in a matching subfolder tree. Each file is uploaded
- * with [DriveClient.upload] (which routes small→simple, large→resumable), and anything
- * already recorded in the [UploadManifest] is skipped, so re-runs are cheap and never
- * duplicate.
+ * Uploads the local archive files produced by [com.diffuse.backup.BackupRunner] into a
+ * `Diffuse` folder on Drive, mirroring their directory structure. As of Phase 4 media
+ * originals stream straight to Drive during extraction ([DriveMediaSink]) and never land on
+ * disk, so in practice this uploads just the small timestamped `*.xml` documents — but it
+ * still walks the whole tree, so any local file (e.g. a leftover from an older run) is handled.
  *
- * Pure logic over [DriveClient] + [UploadManifest]; unit-tested with a fake DriveClient.
+ * Each file is uploaded with [DriveClient.upload] (small→simple, large→resumable); anything
+ * already in the [UploadManifest] is skipped, so re-runs are cheap and never duplicate.
+ * Folder resolution is shared with [DriveMediaSink] via [DriveFolderTree].
+ *
+ * Pure logic over [DriveApi] + [UploadManifest]; unit-tested with a fake DriveApi.
  * READ-ONLY: reads local archive files and uploads them; touches no content provider.
  */
 class DriveUploader(
@@ -31,8 +34,7 @@ class DriveUploader(
     /** Upload every file under [outputDir], mirroring its directory structure to Drive. */
     fun upload(outputDir: File): UploadSummary {
         val rootId = drive.ensureFolder(rootFolderName)
-        // Cache of archive-relative-dir → Drive folderId; "" is the root folder.
-        val folderIds = HashMap<String, String>().apply { put("", rootId) }
+        val folders = DriveFolderTree(drive, rootId)
 
         var uploaded = 0
         var skipped = 0
@@ -48,25 +50,13 @@ class DriveUploader(
                     return@forEach
                 }
                 val relDir = rel.substringBeforeLast('/', missingDelimiterValue = "")
-                val parentId = folderId(relDir, folderIds)
-                val id = drive.upload(file.name, parentId, mimeOf(file), file)
+                val id = drive.upload(file.name, folders.folderId(relDir), mimeOf(file), file)
                 manifest.record(rel, id)
                 uploaded++
                 bytes += file.length()
             }
 
         return UploadSummary(uploaded, skipped, bytes, rootId)
-    }
-
-    /** Resolve (creating and caching) the Drive folder id for archive-relative dir [relDir]. */
-    private fun folderId(relDir: String, cache: MutableMap<String, String>): String {
-        cache[relDir]?.let { return it }
-        val parent = relDir.substringBeforeLast('/', missingDelimiterValue = "")
-        val name = relDir.substringAfterLast('/')
-        val parentId = folderId(parent, cache)
-        val id = drive.ensureFolder(name, parentId)
-        cache[relDir] = id
-        return id
     }
 
     /** Archive-relative path with forward slashes (Drive/manifest are platform-neutral). */

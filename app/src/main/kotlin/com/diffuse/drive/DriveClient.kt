@@ -5,12 +5,20 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.InputStream
 import java.net.URLEncoder
 
-/** The Drive operations [DriveUploader] needs; implemented by [DriveClient], fakeable in tests. */
+/** The Drive operations Diffuse needs; implemented by [DriveClient], fakeable in tests. */
 interface DriveApi {
     fun ensureFolder(name: String, parentId: String? = null): String
+    /** Upload a local file, size-routing simple vs resumable by its length. */
     fun upload(name: String, parentId: String, mimeType: String, file: File): String
+    /**
+     * Upload [length] bytes streamed from [open] (a re-openable read-only source such as a
+     * content-provider stream), size-routing on [length]. Lets a photo/video go straight
+     * provider→Drive with no local copy.
+     */
+    fun upload(name: String, parentId: String, mimeType: String, length: Long, open: () -> InputStream): String
 }
 
 /**
@@ -71,35 +79,46 @@ class DriveClient(
         if (file.length() <= resumableThresholdBytes) uploadSimple(name, parentId, mimeType, file)
         else uploadResumable(name, parentId, mimeType, file)
 
+    /** Streaming counterpart of [upload]: size-routes on [length], never touching local disk. */
+    override fun upload(name: String, parentId: String, mimeType: String, length: Long, open: () -> InputStream): String =
+        if (length <= resumableThresholdBytes)
+            uploadSimpleCore(name, parentId) { meta -> Http.Body.RelatedStream(meta, open, length, mimeType) }
+        else
+            uploadResumableCore(name, parentId, mimeType, length) { Http.Body.StreamBody(open, length, mimeType) }
+
     /** Simple `multipart/related` upload (metadata + bytes in one request). */
-    fun uploadSimple(name: String, parentId: String, mimeType: String, file: File): String {
-        val meta = FileMetadata(name = name, parents = listOf(parentId))
-        val resp = authed(
-            "POST",
-            "$uploadBase/files?uploadType=multipart&fields=id",
-            body = Http.Body.RelatedFile(
-                metadataJson = json.encodeToString(FileMetadata.serializer(), meta),
-                file = file,
-                mediaContentType = mimeType,
-            ),
-        )
-        require(resp.isSuccess) { "simple upload failed: ${resp.code} ${resp.body}" }
-        return json.decodeFromString<DriveFile>(resp.body).id
-    }
+    fun uploadSimple(name: String, parentId: String, mimeType: String, file: File): String =
+        uploadSimpleCore(name, parentId) { meta -> Http.Body.RelatedFile(meta, file, mimeType) }
 
     /**
      * Resumable upload: initiate a session, then PUT the file bytes. Robust for large
      * videos on a flaky connection — the single PUT can be re-driven against the session
      * URI. (Chunked upload with progress is a fast-follow.)
      */
-    fun uploadResumable(name: String, parentId: String, mimeType: String, file: File): String {
+    fun uploadResumable(name: String, parentId: String, mimeType: String, file: File): String =
+        uploadResumableCore(name, parentId, mimeType, file.length()) { Http.Body.FileBody(file, mimeType) }
+
+    /** Shared simple-upload body: [relatedBody] wraps the JSON metadata + media part (file or stream). */
+    private inline fun uploadSimpleCore(name: String, parentId: String, relatedBody: (metadataJson: String) -> Http.Body): String {
+        val meta = FileMetadata(name = name, parents = listOf(parentId))
+        val resp = authed(
+            "POST",
+            "$uploadBase/files?uploadType=multipart&fields=id",
+            body = relatedBody(json.encodeToString(FileMetadata.serializer(), meta)),
+        )
+        require(resp.isSuccess) { "simple upload failed: ${resp.code} ${resp.body}" }
+        return json.decodeFromString<DriveFile>(resp.body).id
+    }
+
+    /** Shared resumable-upload flow: init a session with [length], then PUT [putBody]. */
+    private inline fun uploadResumableCore(name: String, parentId: String, mimeType: String, length: Long, putBody: () -> Http.Body): String {
         val meta = FileMetadata(name = name, parents = listOf(parentId))
         val init = authed(
             "POST",
             "$uploadBase/files?uploadType=resumable&fields=id",
             headers = mapOf(
                 "X-Upload-Content-Type" to mimeType,
-                "X-Upload-Content-Length" to file.length().toString(),
+                "X-Upload-Content-Length" to length.toString(),
             ),
             body = Http.Body.Bytes(json.encodeToString(FileMetadata.serializer(), meta).toByteArray(), JSON_CT),
         )
@@ -107,7 +126,7 @@ class DriveClient(
         val session = init.header("Location")
             ?: error("resumable init returned no Location header")
 
-        val put = authed("PUT", session, body = Http.Body.FileBody(file, mimeType))
+        val put = authed("PUT", session, body = putBody())
         require(put.isSuccess) { "resumable PUT failed: ${put.code} ${put.body}" }
         return json.decodeFromString<DriveFile>(put.body).id
     }

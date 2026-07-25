@@ -27,7 +27,7 @@ android {
         minSdk = 33
         targetSdk = 34
         versionCode = 1
-        versionName = "0.1.0-phase3"
+        versionName = "0.1.0-phase4"
 
         buildConfigField("String", "DRIVE_CLIENT_ID", creds("DRIVE_CLIENT_ID"))
         buildConfigField("String", "DRIVE_CLIENT_SECRET", creds("DRIVE_CLIENT_SECRET"))
@@ -81,6 +81,9 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.zxing.core)
     implementation(libs.androidx.security.crypto)
+
+    // Phase 4 — scheduled background backup
+    implementation(libs.androidx.work.runtime.ktx)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
