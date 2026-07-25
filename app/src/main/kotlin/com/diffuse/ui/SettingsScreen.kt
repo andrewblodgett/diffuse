@@ -28,6 +28,9 @@ import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightThemeTokens
 import com.thelightphone.sdk.ui.lightClickable
 
+/** One consistent body-text size across settings, matching the home screen. */
+private val Body = LightTextVariant.Paragraph
+
 /**
  * Scheduling settings: how often the background backup runs and under what conditions. Every
  * change is persisted and immediately reconciled with WorkManager via [BackupScheduler.sync].
@@ -59,7 +62,7 @@ fun SettingsScreen(onBack: () -> Unit) {
         ) {
             LightText(text = "Settings", variant = LightTextVariant.Heading)
 
-            LightText(text = "Automatic backup", variant = LightTextVariant.Detail, lighten = true)
+            LightText(text = "Automatic backup", variant = Body)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 BackupFrequency.entries.forEach { freq ->
                     Chip(
@@ -91,13 +94,12 @@ fun SettingsScreen(onBack: () -> Unit) {
                         (if (prefs.wifiOnly) ", on Wi-Fi" else "") +
                         (if (prefs.chargingOnly) ", while charging" else "") + "."
                 },
-                variant = LightTextVariant.Fine,
-                lighten = true,
+                variant = Body,
             )
 
             LightText(
                 text = "Back",
-                variant = LightTextVariant.Detail,
+                variant = Body,
                 modifier = Modifier.lightClickable(onClick = onBack),
             )
         }
@@ -107,20 +109,21 @@ fun SettingsScreen(onBack: () -> Unit) {
 @Composable
 private fun Chip(text: String, selected: Boolean, onClick: () -> Unit) {
     val colors = LightThemeTokens.colors
-    // A bordered pill; the selected one is marked with a leading dot and full-strength text,
-    // unselected ones are lightened — legible without relying on a text-color override.
+    // A bordered pill. The selected one is filled (white box, black text) so the choice is obvious
+    // at a glance; unselected chips stay white-on-black like the rest of the screen.
     Box(
         modifier = Modifier
             .border(1.dp, colors.content)
+            .background(if (selected) colors.content else colors.background)
             .lightClickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
         LightText(
-            text = if (selected) "• $text" else text,
-            variant = LightTextVariant.Detail,
+            text = text,
+            variant = Body,
             align = TextAlign.Center,
-            lighten = !selected,
+            color = if (selected) colors.background else colors.content,
         )
     }
 }
@@ -134,7 +137,7 @@ private fun ToggleRow(label: String, on: Boolean, onToggle: (Boolean) -> Unit) {
             .padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        LightText(text = label, variant = LightTextVariant.Detail)
-        LightText(text = if (on) "On" else "Off", variant = LightTextVariant.Detail, lighten = !on)
+        LightText(text = label, variant = Body)
+        LightText(text = if (on) "On" else "Off", variant = Body)
     }
 }
