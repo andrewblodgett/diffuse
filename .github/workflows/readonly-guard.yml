@@ -1,0 +1,16 @@
+name: read-only guard
+
+# Enforces the core invariant on every push/PR: Diffuse never mutates on-device
+# data. This is a static check (grep over source + manifest) and needs no Android
+# SDK, so it runs on a bare runner in seconds.
+on:
+  push:
+  pull_request:
+
+jobs:
+  static-readonly-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Diffuse must never mutate on-device data
+        run: bash scripts/check-readonly.sh

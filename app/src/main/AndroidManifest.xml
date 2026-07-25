@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- ====================================================================
+         READ-ONLY GUARANTEE — this manifest is the first line of it.
+
+         Diffuse performs a strictly one-way backup. It reads on-device data
+         and never modifies it. The OS enforces that guarantee: the app holds
+         ONLY the READ permissions below. It declares NO write permission
+         (no WRITE_SMS — which does not even exist as a runtime permission;
+         no WRITE_CALL_LOG; no WRITE_EXTERNAL_STORAGE / MANAGE_EXTERNAL_STORAGE)
+         and NEVER requests the default-SMS role. Any attempt to write to
+         content://sms, content://call_log, or MediaStore would therefore throw
+         a SecurityException at runtime.
+
+         Do not add a write permission here. scripts/check-readonly.sh fails the
+         build if one appears.
+
+         (INTERNET / ACCESS_NETWORK_STATE are for uploading to Google Drive in a
+         later phase; they do not grant any access to local user data.)
+         ==================================================================== -->
+
+    <!-- Local user data: READ ONLY. -->
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+
+    <!-- Network (for Google Drive upload in a later phase). Not local-data access. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Diffuse">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.Diffuse">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

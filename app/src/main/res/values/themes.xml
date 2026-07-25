@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Platform-only theme (no Material Components XML dependency). LightOS is
+     dark by default, so the window starts black to avoid a light flash before
+     Compose draws the Light theme. -->
+<resources>
+    <style name="Theme.Diffuse" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/black</item>
+        <item name="android:navigationBarColor">@android:color/black</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
