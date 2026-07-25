@@ -19,6 +19,12 @@ interface DriveApi {
      * provider→Drive with no local copy.
      */
     fun upload(name: String, parentId: String, mimeType: String, length: Long, open: () -> InputStream): String
+
+    /**
+     * The signed-in account's email address (Drive `about.user.emailAddress`), or null if it
+     * can't be determined. Lets the UI show *which* Google account is connected.
+     */
+    fun accountEmail(): String? = null
 }
 
 /**
@@ -131,6 +137,18 @@ class DriveClient(
         return json.decodeFromString<DriveFile>(put.body).id
     }
 
+    /**
+     * Read the connected account's email from Drive's `about` resource. `drive.file` is enough to
+     * call `about.get` for the authenticated user. Returns null (never throws) if the call fails,
+     * so a missing email never breaks the UI.
+     */
+    override fun accountEmail(): String? = try {
+        val resp = authed("GET", "$apiBase/about?fields=user")
+        if (resp.isSuccess) json.decodeFromString<About>(resp.body).user?.emailAddress else null
+    } catch (_: Exception) {
+        null
+    }
+
     /** Attach a bearer token; on 401 refresh once and retry. */
     private fun authed(
         method: String,
@@ -160,6 +178,15 @@ class DriveClient(
 
     @Serializable
     private data class FileList(val files: List<DriveFile> = emptyList())
+
+    @Serializable
+    private data class About(val user: AboutUser? = null)
+
+    @Serializable
+    private data class AboutUser(
+        val emailAddress: String? = null,
+        val displayName: String? = null,
+    )
 
     private companion object {
         const val API_BASE = "https://www.googleapis.com/drive/v3"

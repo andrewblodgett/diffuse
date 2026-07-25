@@ -1,6 +1,5 @@
 package com.diffuse.ui
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -17,14 +16,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -38,9 +37,6 @@ import com.thelightphone.sdk.ui.LightThemeTokens
 import com.thelightphone.sdk.ui.lightClickable
 import java.util.Calendar
 
-/** One consistent body-text size across settings, matching the home screen. */
-private val Body = LightTextVariant.Paragraph
-
 /**
  * Settings: what to back up (photos / videos / messages & calls), how often the background backup
  * runs and when (hour of day, plus day of week for weekly), the network/charging constraints, and
@@ -48,11 +44,16 @@ private val Body = LightTextVariant.Paragraph
  * WorkManager via [BackupScheduler.sync]. Defaults come from [BackupPrefs].
  */
 @Composable
-fun SettingsScreen(onBack: () -> Unit, onSignOut: () -> Unit) {
+fun SettingsScreen(controller: BackupController, onBack: () -> Unit, onSignOut: () -> Unit) {
     val colors = LightThemeTokens.colors
     val context = LocalContext.current
     val settings = remember { BackupSettings(context) }
     var prefs by remember { mutableStateOf(settings.prefsValue) }
+    val scope = rememberCoroutineScope()
+
+    // Look up the connected account's email if we don't have it yet (e.g. signed in before this
+    // feature existed); once cached it shows instantly with no network call.
+    LaunchedEffect(Unit) { controller.refreshAccountEmail(scope) }
 
     fun update(new: BackupPrefs) {
         val old = prefs
@@ -138,7 +139,14 @@ fun SettingsScreen(onBack: () -> Unit, onSignOut: () -> Unit) {
 
             LightText(text = scheduleSummary(prefs), variant = Body)
 
+            // --- Account -------------------------------------------------------------
             Spacer(Modifier.height(8.dp))
+            SectionLabel("Account")
+            LightText(
+                text = controller.accountEmail?.let { "Signed in as $it" } ?: "Connected to Google Drive",
+                variant = Body,
+            )
+            Spacer(Modifier.height(4.dp))
             SignOutButton(onSignOut)
         }
     }
@@ -273,21 +281,5 @@ private fun SignOutButton(onSignOut: () -> Unit) {
             variant = Body,
             align = TextAlign.Center,
         )
-    }
-}
-
-/** A simple chevron (‹ or ›) drawn in the theme's content color. */
-@Composable
-private fun Chevron(pointsLeft: Boolean, modifier: Modifier = Modifier) {
-    val color = LightThemeTokens.colors.content
-    Canvas(modifier = modifier) {
-        val stroke = size.minDimension * 0.14f
-        val tipX = if (pointsLeft) size.width * 0.28f else size.width * 0.72f
-        val armX = if (pointsLeft) size.width * 0.66f else size.width * 0.34f
-        val topY = size.height * 0.18f
-        val midY = size.height * 0.5f
-        val botY = size.height * 0.82f
-        drawLine(color, Offset(armX, topY), Offset(tipX, midY), strokeWidth = stroke, cap = StrokeCap.Round)
-        drawLine(color, Offset(tipX, midY), Offset(armX, botY), strokeWidth = stroke, cap = StrokeCap.Round)
     }
 }

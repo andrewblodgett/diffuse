@@ -19,6 +19,14 @@ interface DriveCredentialStore {
     /** Epoch-millis at which [accessToken] expires (0 if none). */
     var accessTokenExpiryMs: Long
 
+    /**
+     * The connected account's email, cached after sign-in for display. Optional — the default
+     * no-op keeps test fakes and the auth layer (which doesn't care) from having to implement it.
+     */
+    var accountEmail: String?
+        get() = null
+        set(_) {}
+
     /** True once a refresh token is stored — i.e. the user has connected Drive. */
     val isConnected: Boolean get() = refreshToken != null
 

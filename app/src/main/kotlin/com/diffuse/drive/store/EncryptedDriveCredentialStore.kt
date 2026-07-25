@@ -41,6 +41,10 @@ class EncryptedDriveCredentialStore(context: Context) : DriveCredentialStore {
         get() = prefs.getLong(KEY_EXPIRY, 0L)
         set(value) = prefs.edit().putLong(KEY_EXPIRY, value).apply()
 
+    override var accountEmail: String?
+        get() = prefs.getString(KEY_EMAIL, null)
+        set(value) = prefs.edit().putStringOrRemove(KEY_EMAIL, value).apply()
+
     override fun save(refreshToken: String?, accessToken: String?, expiryMs: Long) {
         prefs.edit()
             .putStringOrRemove(KEY_REFRESH, refreshToken)
@@ -60,5 +64,6 @@ class EncryptedDriveCredentialStore(context: Context) : DriveCredentialStore {
         const val KEY_REFRESH = "refresh_token"
         const val KEY_ACCESS = "access_token"
         const val KEY_EXPIRY = "access_token_expiry_ms"
+        const val KEY_EMAIL = "account_email"
     }
 }

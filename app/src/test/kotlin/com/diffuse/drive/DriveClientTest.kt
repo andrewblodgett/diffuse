@@ -98,6 +98,15 @@ class DriveClientTest {
         assertEquals(2L, (body as Http.Body.RelatedStream).length)
     }
 
+    @Test fun accountEmail_reads_about_user_and_is_null_on_failure() {
+        val ok = FakeHttp { HttpResp(200, """{"user":{"emailAddress":"a@b.com","displayName":"A B"}}""") }
+        assertEquals("a@b.com", DriveClient(ok, FakeTokens()).accountEmail())
+        assertTrue("about" in ok.requests.single().url)
+
+        val bad = FakeHttp { HttpResp(403, """{"error":"forbidden"}""") }
+        assertEquals(null, DriveClient(bad, FakeTokens()).accountEmail())
+    }
+
     @Test fun on_401_it_refreshes_and_retries_with_new_token() {
         val tokens = FakeTokens(token = "stale", refreshed = "fresh")
         var calls = 0

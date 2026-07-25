@@ -9,7 +9,6 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -40,13 +39,6 @@ import com.thelightphone.sdk.ui.lightClickable
 import kotlin.math.cos
 import kotlin.math.sin
 
-/**
- * The single body-text size used everywhere except the "Diffuse" title, so the screen reads at one
- * consistent, comfortably-large size. Text is always full-strength white on black — hierarchy comes
- * from layout, not from graying text out.
- */
-private val Body = LightTextVariant.Paragraph
-
 /** Runtime read permissions the backup needs. Requested on demand before a backup run. */
 private val REQUIRED_PERMISSIONS = buildList {
     add(Manifest.permission.READ_SMS)
@@ -63,7 +55,7 @@ private val REQUIRED_PERMISSIONS = buildList {
  * Settings. Driven by [BackupController]; styling reuses the vendored Light theme.
  */
 @Composable
-fun HomeScreen(controller: BackupController, onOpenSettings: () -> Unit) {
+fun HomeScreen(controller: BackupController, onOpenSettings: () -> Unit, onConnect: () -> Unit) {
     val colors = LightThemeTokens.colors
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -113,23 +105,9 @@ fun HomeScreen(controller: BackupController, onOpenSettings: () -> Unit) {
             )
 
             if (!controller.connected) {
-                LightButton(text = "Connect Drive") { controller.connect(scope) }
+                LightButton(text = "Connect Drive", onClick = onConnect)
             } else {
                 LightButton(text = "Back up now") { permissionLauncher.launch(REQUIRED_PERMISSIONS) }
-            }
-
-            controller.qr?.let { bitmap ->
-                Image(
-                    bitmap = bitmap,
-                    contentDescription = "Sign-in QR code",
-                    modifier = Modifier.size(220.dp),
-                )
-                controller.verificationUrl?.let {
-                    LightText(text = it, variant = Body, align = TextAlign.Center)
-                }
-                controller.userCode?.let {
-                    LightText(text = "Code: $it", variant = Body, align = TextAlign.Center)
-                }
             }
 
             // --- Live progress during a run --------------------------------------
@@ -210,21 +188,6 @@ private fun relativeTime(epochMs: Long): String {
         secs < 3600 -> "${secs / 60}m ago"
         secs < 86_400 -> "${secs / 3600}h ago"
         else -> "${secs / 86_400}d ago"
-    }
-}
-
-/** A bordered, tappable label styled with the Light theme. */
-@Composable
-private fun LightButton(text: String, onClick: () -> Unit) {
-    val colors = LightThemeTokens.colors
-    Box(
-        modifier = Modifier
-            .border(1.dp, colors.content)
-            .lightClickable(onClick = onClick)
-            .padding(horizontal = 24.dp, vertical = 12.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        LightText(text = text, variant = Body, align = TextAlign.Center)
     }
 }
 

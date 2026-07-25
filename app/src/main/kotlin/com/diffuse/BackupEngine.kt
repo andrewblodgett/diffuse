@@ -53,6 +53,17 @@ class BackupEngine(context: Context) {
     /** Forget the stored Drive credentials — the user must re-scan the QR to reconnect. */
     fun signOut() = credentialStore.clear()
 
+    /** The connected account's email as last cached, or null if unknown / not connected. */
+    val accountEmail: String? get() = credentialStore.accountEmail
+
+    /**
+     * Fetch the connected account's email from Drive and cache it for display; returns the fresh
+     * value (or the cached one if the network call fails). Requires a valid token, so only call
+     * while connected. Blocking — run off the main thread.
+     */
+    fun refreshAccountEmail(): String? =
+        driveClient.accountEmail()?.also { credentialStore.accountEmail = it } ?: credentialStore.accountEmail
+
     /** False when the build has no Drive client id (see docs/drive-setup.md). */
     val credentialsConfigured: Boolean get() = BuildConfig.DRIVE_CLIENT_ID.isNotBlank()
 

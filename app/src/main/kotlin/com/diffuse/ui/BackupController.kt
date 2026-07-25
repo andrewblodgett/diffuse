@@ -59,6 +59,10 @@ class BackupController(context: Context) {
     var lastRun by mutableStateOf<LastRun?>(engine.lastRun())
         private set
 
+    /** Email of the connected Google account, for display; null until known. */
+    var accountEmail by mutableStateOf(engine.accountEmail)
+        private set
+
     val credentialsConfigured: Boolean get() = engine.credentialsConfigured
 
     /** Begin the QR device-flow sign-in and poll until the user approves or it fails. */
@@ -85,6 +89,7 @@ class BackupController(context: Context) {
                         is PollResult.Authorized -> {
                             engine.tokenProvider.onSignedIn(r.tokens)
                             connected = true
+                            accountEmail = runCatching { engine.refreshAccountEmail() }.getOrNull()
                             resetSignIn()
                             phase = Phase.Idle
                             message = "Connected to Google Drive."
@@ -140,9 +145,19 @@ class BackupController(context: Context) {
     fun signOut() {
         engine.signOut()
         connected = false
+        accountEmail = null
         phase = Phase.Idle
         message = null
         resetSignIn()
+    }
+
+    /** Populate [accountEmail] in the background if it's not already known (e.g. connected before
+     *  this feature existed). Safe to call from a screen; no-op when disconnected. */
+    fun refreshAccountEmail(scope: CoroutineScope) {
+        if (!connected || accountEmail != null) return
+        scope.launch(Dispatchers.IO) {
+            runCatching { engine.refreshAccountEmail() }.getOrNull()?.let { accountEmail = it }
+        }
     }
 
     /** Called by the UI when the user declines the required read permissions. */
