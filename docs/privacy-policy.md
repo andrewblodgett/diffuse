@@ -4,7 +4,7 @@ title: Diffuse Privacy Policy
 
 # Privacy Policy for Diffuse
 
-**Last updated: <!-- FILL IN: e.g. 2026-07-26 -->**
+**Last updated: 2026-07-25**
 
 Diffuse is an open-source, independent backup app for the Light Phone III. It
 copies your messages, call history, photos, and videos to **your own Google
@@ -78,3 +78,5 @@ Any changes will be posted at this URL with an updated "Last updated" date.
 
 Diffuse is an independent community project and is not affiliated with, endorsed
 by, or supported by The Light Phone / Light Inc.
+
+You can reach out to open-hummus-change@duck.com with any questions.
