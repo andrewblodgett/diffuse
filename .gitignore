@@ -5,6 +5,7 @@ build/
 
 # Android / IDE
 local.properties
+keystore.properties
 *.apk
 *.aab
 *.keystore

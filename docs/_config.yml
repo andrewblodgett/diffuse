@@ -1,0 +1,7 @@
+# GitHub Pages config for the Diffuse docs site (served from the /docs folder).
+# Enable at: repo Settings -> Pages -> Source: "Deploy from a branch",
+# Branch: master, Folder: /docs. The privacy policy is then reachable at
+#   https://<your-username>.github.io/<repo>/privacy-policy
+title: Diffuse
+description: Read-only backup for the Light Phone III
+theme: jekyll-theme-cayman
