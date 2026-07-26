@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- ====================================================================
          READ-ONLY GUARANTEE — this manifest is the first line of it.
@@ -55,6 +56,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- WorkManager runs the scheduled backup as a data-sync foreground job.
+             On SDK 34+ the OS (and the androidx.work SpecifyForegroundServiceType
+             lint check) requires the service's foregroundServiceType to be declared
+             here explicitly; the worker also sets it at runtime in
+             BackupWorker.foregroundInfo(). -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
     </application>
 
 </manifest>

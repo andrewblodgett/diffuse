@@ -34,5 +34,11 @@
 -keep class com.google.zxing.** { *; }
 -dontwarn com.google.zxing.**
 
+# --- Google Tink (keyset encryption for stored Drive tokens) ---------------
+# Tink references Error Prone annotations that are compile-time-only and absent
+# at runtime. They are safe to ignore; without this, R8 fails the release build
+# with "Missing class com.google.errorprone.annotations.*".
+-dontwarn com.google.errorprone.annotations.**
+
 # --- Keep BuildConfig (Drive client id/secret are read from here) ----------
 -keep class com.diffuse.BuildConfig { *; }
