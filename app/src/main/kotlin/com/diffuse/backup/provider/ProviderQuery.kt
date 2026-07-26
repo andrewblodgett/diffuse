@@ -33,15 +33,3 @@ internal fun ContentResolver.countRows(
     query(uri, arrayOf("_id"), selection, selectionArgs, null)?.use { return it.count }
     return 0
 }
-
-/**
- * Largest value of [column] currently in the table, or 0 when empty. Reads the first
- * row of a descending sort (no LIMIT — LIMIT-in-sortOrder is rejected by MediaStore
- * on modern Android, and a windowed cursor only fills its first window anyway).
- */
-internal fun ContentResolver.maxLong(uri: Uri, column: String): Long {
-    query(uri, arrayOf(column), null, null, "$column DESC")?.use { cursor ->
-        if (cursor.moveToFirst() && !cursor.isNull(0)) return cursor.getLong(0)
-    }
-    return 0L
-}

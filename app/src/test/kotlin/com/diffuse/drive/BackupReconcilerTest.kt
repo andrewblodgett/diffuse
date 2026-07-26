@@ -1,9 +1,6 @@
 package com.diffuse.drive
 
-import com.diffuse.backup.store.TokenStore
 import com.diffuse.drive.store.UploadManifest
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -22,56 +19,39 @@ class BackupReconcilerTest {
         override fun listAllFileIds(): Set<String> = liveIds
     }
 
-    private class InMemoryTokenStore : TokenStore {
-        val values = mutableMapOf<String, Long>()
-        override fun get(sourceId: String) = values[sourceId]
-        override fun put(sourceId: String, token: Long) { values[sourceId] = token }
-        override fun clear(sourceId: String) { values.remove(sourceId) }
-    }
-
-    @Test fun leaves_tokens_alone_when_everything_manifest_knows_is_still_on_drive() {
+    @Test fun leaves_manifest_alone_when_everything_it_knows_is_still_on_drive() {
         val manifest = UploadManifest(File(tmp.root, "m.properties")).apply {
             record("media/a.jpg", "id1")
         }
-        val tokens = InMemoryTokenStore().apply { put("images", 42L) }
-        val reconciler = BackupReconciler(FakeDrive(setOf("id1")), manifest, tokens, listOf("images"))
+        val reconciler = BackupReconciler(FakeDrive(setOf("id1")), manifest)
 
         reconciler.reconcile()
 
         assertTrue(manifest.contains("media/a.jpg"))
-        assertEquals(42L, tokens.get("images"))
     }
 
-    @Test fun prunes_manifest_and_clears_every_token_when_drive_lost_a_file() {
+    @Test fun prunes_manifest_entries_for_files_drive_no_longer_has() {
         val manifest = UploadManifest(File(tmp.root, "m.properties")).apply {
             record("media/a.jpg", "id1")
             record("media/b.jpg", "id2")
         }
         // Manifest thinks both are uploaded; Drive only actually has id1 (id2 was deleted).
-        val tokens = InMemoryTokenStore().apply {
-            put("images", 42L)
-            put("sms", 7L)
-        }
-        val reconciler = BackupReconciler(FakeDrive(setOf("id1")), manifest, tokens, listOf("images", "sms"))
+        val reconciler = BackupReconciler(FakeDrive(setOf("id1")), manifest)
 
         reconciler.reconcile()
 
         assertTrue(manifest.contains("media/a.jpg"))
         assertTrue("stale entry must be pruned so it gets re-uploaded", !manifest.contains("media/b.jpg"))
-        assertNull("every token is cleared, not just the media one", tokens.get("images"))
-        assertNull(tokens.get("sms"))
     }
 
-    @Test fun empty_drive_wipes_manifest_and_all_tokens() {
+    @Test fun empty_drive_wipes_manifest() {
         val manifest = UploadManifest(File(tmp.root, "m.properties")).apply {
             record("media/a.jpg", "id1")
         }
-        val tokens = InMemoryTokenStore().apply { put("images", 1L) }
-        val reconciler = BackupReconciler(FakeDrive(emptySet()), manifest, tokens, listOf("images"))
+        val reconciler = BackupReconciler(FakeDrive(emptySet()), manifest)
 
         reconciler.reconcile()
 
         assertTrue(!manifest.contains("media/a.jpg"))
-        assertNull(tokens.get("images"))
     }
 }

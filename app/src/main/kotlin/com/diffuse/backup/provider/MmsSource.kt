@@ -46,8 +46,6 @@ class MmsSource(private val resolver: ContentResolver) : BackupSource<Long> {
         return resolver.countRows(MMS_URI, selection, args)
     }
 
-    override suspend fun currentToken(): Long = resolver.maxLong(MMS_URI, "date")
-
     private fun readParts(mmsId: Long): List<MmsPart> {
         val parts = ArrayList<MmsPart>()
         resolver.forEachRow(

@@ -44,6 +44,4 @@ abstract class ContentProviderSource(
         val (selection, args) = sinceSelection(since)
         return resolver.countRows(uri, selection, args)
     }
-
-    override suspend fun currentToken(): Long = resolver.maxLong(uri, tokenColumn)
 }

@@ -13,6 +13,14 @@ interface DriveApi {
     fun ensureFolder(name: String, parentId: String? = null): String
     /** Upload a local file, size-routing simple vs resumable by its length. */
     fun upload(name: String, parentId: String, mimeType: String, file: File): String
+
+    /**
+     * Overwrite the content of the existing file [fileId] with [file]'s bytes, keeping the same
+     * id, name, and parent. Lets a stable-named document (`calls.xml`, `sms.xml`, …) be refreshed
+     * in place each run instead of piling up a new copy. Default throws so fakes that never update
+     * fail loudly if one is unexpectedly called.
+     */
+    fun update(fileId: String, mimeType: String, file: File): Unit = error("update not supported")
     /**
      * Upload [length] bytes streamed from [open] (a re-openable read-only source such as a
      * content-provider stream), size-routing on [length]. Lets a photo/video go straight
@@ -93,6 +101,20 @@ class DriveClient(
     override fun upload(name: String, parentId: String, mimeType: String, file: File): String =
         if (file.length() <= resumableThresholdBytes) uploadSimple(name, parentId, mimeType, file)
         else uploadResumable(name, parentId, mimeType, file)
+
+    /**
+     * Overwrite [fileId]'s content with [file] via a media PATCH (`uploadType=media`) — no
+     * metadata change, so id/name/parent are preserved. Small docs only, so a plain streamed
+     * body is fine (no resumable session needed).
+     */
+    override fun update(fileId: String, mimeType: String, file: File) {
+        val resp = authed(
+            "PATCH",
+            "$uploadBase/files/$fileId?uploadType=media&fields=id",
+            body = Http.Body.FileBody(file, mimeType),
+        )
+        require(resp.isSuccess) { "update failed: ${resp.code} ${resp.body}" }
+    }
 
     /** Streaming counterpart of [upload]: size-routes on [length], never touching local disk. */
     override fun upload(name: String, parentId: String, mimeType: String, length: Long, open: () -> InputStream): String =

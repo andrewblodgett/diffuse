@@ -20,9 +20,9 @@ import kotlinx.coroutines.flow.Flow
  *      (contentResolver.insert/update/delete, MediaStore write-requests, an output
  *      stream, a non-"r" file mode, ...) ever appears in app source.
  *
- * @param C an opaque, monotonic change-token type used for incremental backup
- *          (e.g. a MediaStore generation value, or a max row `date`). Passing the
- *          previous token yields only items added or changed since then.
+ * @param C an opaque, monotonic change-token type (e.g. a MediaStore generation value,
+ *          or a max row `date`). Passing a previous token to [itemsSince] yields only
+ *          items added or changed since then; passing null yields everything.
  */
 interface BackupSource<C : Any> {
 
@@ -35,10 +35,4 @@ interface BackupSource<C : Any> {
      * for reading and never writes back to the provider.
      */
     fun itemsSince(since: C?): Flow<BackupItem>
-
-    /**
-     * The change-token to persist after a successful run, so the next pass only
-     * sees newer data. Read-only: derived from reading the provider's current state.
-     */
-    suspend fun currentToken(): C
 }

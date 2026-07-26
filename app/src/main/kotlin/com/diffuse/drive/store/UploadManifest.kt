@@ -5,9 +5,9 @@ import java.util.Properties
 
 /**
  * Records which archive files have already been uploaded to Drive (archive-relative
- * path → Drive fileId), so re-running a backup skips work already done and never
- * duplicates. Mirrors the `Properties`-file approach of
- * [com.diffuse.backup.store.FilePropertiesTokenStore].
+ * path → Drive fileId), so re-running a backup skips media bytes already uploaded and
+ * overwrites the stable-named XML docs in place instead of duplicating them. A simple
+ * `java.util.Properties` file.
  *
  * If the manifest is ever lost, the worst case is re-uploading (folder creation stays
  * idempotent via [com.diffuse.drive.DriveClient.ensureFolder]); it is an optimization,

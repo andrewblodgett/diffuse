@@ -5,7 +5,6 @@ import android.net.Uri
 import com.diffuse.backup.BackupProgress
 import com.diffuse.backup.BackupRunner
 import com.diffuse.work.BackupSettings
-import com.diffuse.backup.store.FilePropertiesTokenStore
 import com.diffuse.backup.store.LastRun
 import com.diffuse.backup.store.LastRunStore
 import com.diffuse.drive.BackupReconciler
@@ -25,8 +24,8 @@ import java.io.IOException
  * The whole backup stack in one place — the shared engine behind both the interactive
  * [com.diffuse.ui.BackupController] (the "Back up now" button) and the scheduled
  * [com.diffuse.work.BackupWorker], so a manual run and an automatic run do *exactly* the same
- * thing. It owns the Drive plumbing (auth, client, manifest), the incremental token store, and
- * the last-run record, and exposes [runBackup] to execute one full extract→stream→upload pass.
+ * thing. It owns the Drive plumbing (auth, client, manifest) and the last-run record, and
+ * exposes [runBackup] to execute one full extract→stream→upload pass.
  *
  * READ-ONLY: reads the providers (via [BackupRunner], opening media streams in "r" mode) and
  * writes only to our own files and to Drive; nothing mutates a content provider.
@@ -43,12 +42,11 @@ class BackupEngine(context: Context) {
     private val driveClient = DriveClient(http, tokenProvider)
     // One manifest shared by streamed media (`media/…` keys) and the XML docs (`*.xml` keys).
     private val manifest = UploadManifest(File(app.filesDir, "upload-manifest.properties"))
-    private val tokenStore = FilePropertiesTokenStore(File(app.filesDir, "backup-tokens.properties"))
     private val lastRunStore = LastRunStore(File(app.filesDir, "last-run.properties"))
     private val settings = BackupSettings(app)
-    // If Drive no longer has something the manifest/tokens think is already backed up (e.g. the
-    // user emptied the Diffuse folder), this catches it before extraction starts. See its doc.
-    private val reconciler = BackupReconciler(driveClient, manifest, tokenStore, SOURCE_IDS)
+    // If Drive no longer has something the manifest thinks is already backed up (e.g. the user
+    // emptied the Diffuse folder), this catches it before extraction starts. See its doc.
+    private val reconciler = BackupReconciler(driveClient, manifest)
 
     /** True once a Drive refresh token is stored (the QR sign-in completed at least once). */
     val isConnected: Boolean get() = credentialStore.isConnected
@@ -83,10 +81,11 @@ class BackupEngine(context: Context) {
     )
 
     /**
-     * Execute one incremental backup: resolve the Drive root, then extract and upload call log,
-     * messages, photos, and videos in that fixed order (see [BackupRunner]) — each media
-     * original streams straight provider→Drive with no local copy, and each XML doc uploads
-     * immediately after it's written, then persist a success [LastRun]. Reports through
+     * Execute one backup: resolve the Drive root, then extract and upload call log, messages,
+     * photos, and videos in that fixed order (see [BackupRunner]) — each media original streams
+     * straight provider→Drive with no local copy (skipped if already in the manifest), and each
+     * XML doc is written in full and uploaded (or overwritten in place) immediately after, then
+     * persist a success [LastRun]. Reports through
      * [progress]. Throws on failure (callers should surface it and call [recordFailure]); a
      * single unreadable item is skipped inside the runner and never aborts the pass.
      */
@@ -109,10 +108,10 @@ class BackupEngine(context: Context) {
         )
         val fileSink = DriveFileSink(driveClient, folders, manifest)
         val runner = BackupRunner(
-            app.contentResolver, outputDir, tokenStore, mediaSink, fileSink, progress,
+            app.contentResolver, outputDir, mediaSink, fileSink, progress,
             content = settings.prefsValue.content,
         )
-        val s = runner.run(incremental = true)
+        val s = runner.run()
         // Every doc was already uploaded by fileSink as the runner produced it; the local copies
         // are safely on Drive now, so there's no reason to keep them piling up run after run.
         outputDir.listFiles()?.forEach { it.deleteRecursively() }
@@ -130,7 +129,5 @@ class BackupEngine(context: Context) {
 
     private companion object {
         const val ROOT_FOLDER = "Diffuse"
-        // Matches BackupSource.id across SmsSource/MmsSource/CallLogSource/MediaSource.
-        val SOURCE_IDS = listOf("sms", "mms", "call_log", "images", "video")
     }
 }

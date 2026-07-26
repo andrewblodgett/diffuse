@@ -5,8 +5,9 @@ package com.diffuse.backup
  * [BackupRunner]: [messages] covers SMS, MMS, and call history together (the "text & call history"
  * choice), while [pictures] and [videos] gate their respective MediaStore sources.
  *
- * Turning a category off simply skips it — its incremental token is left untouched, so anything
- * created while it was off is still picked up if the user turns it back on. Default: everything on.
+ * Turning a category off simply skips it. Because every run re-exports each enabled category in
+ * full, turning one back on picks up everything, including whatever was created while it was off.
+ * Default: everything on.
  */
 data class BackupContent(
     val pictures: Boolean = true,

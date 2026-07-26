@@ -13,9 +13,9 @@ data class LastRun(
 
 /**
  * Persists the [LastRun] to a `java.util.Properties` file so the home screen can show
- * "last backed up …" after the process is gone. Pure JVM (no Android), mirroring
- * [FilePropertiesTokenStore], so it unit-tests directly. Writing our own app file is not a
- * provider mutation and doesn't touch the read-only invariant.
+ * "last backed up …" after the process is gone. Pure JVM (no Android), so it unit-tests
+ * directly. Writing our own app file is not a provider mutation and doesn't touch the
+ * read-only invariant.
  */
 class LastRunStore(private val file: File) {
 
