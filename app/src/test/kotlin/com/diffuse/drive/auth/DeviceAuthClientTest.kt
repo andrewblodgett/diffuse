@@ -1,6 +1,7 @@
 package com.diffuse.drive.auth
 
 import com.diffuse.drive.FakeHttp
+import com.diffuse.drive.Http
 import com.diffuse.drive.HttpResp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -68,5 +69,25 @@ class DeviceAuthClientTest {
         val form = http.requests.single().body as com.diffuse.drive.Http.Body.Form
         assertEquals("refresh_token", form.fields["grant_type"])
         assertEquals("RT", form.fields["refresh_token"])
+    }
+
+    @Test fun refresh_with_a_revoked_grant_throws_AuthRevoked() {
+        val c = client { HttpResp(400, """{"error":"invalid_grant","error_description":"Token has been expired or revoked."}""") }
+        org.junit.Assert.assertThrows(AuthRevokedException::class.java) { c.refresh("RT") }
+    }
+
+    @Test fun refresh_server_trouble_is_an_IOException_so_it_is_retried() {
+        val c = client { HttpResp(503, "") }
+        org.junit.Assert.assertThrows(java.io.IOException::class.java) { c.refresh("RT") }
+    }
+
+    @Test fun revoke_posts_the_token_and_never_throws() {
+        val ok = FakeHttp { HttpResp(200, "") }
+        assertEquals(true, DeviceAuthClient(ok, "cid", "secret").revoke("RT"))
+        assertEquals("RT", (ok.requests.single().body as Http.Body.Form).fields["token"])
+        assertTrue(ok.requests.single().url.endsWith("/revoke"))
+
+        val down = FakeHttp { throw java.io.IOException("offline") }
+        assertEquals(false, DeviceAuthClient(down, "cid", "secret").revoke("RT"))
     }
 }

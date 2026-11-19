@@ -6,8 +6,9 @@ import java.util.Base64
 
 /**
  * Streams a single SMS Backup & Restore `sms-*.xml` document — the `<smses>` root that
- * holds both `<sms>` and `<mms>` elements — to an [Appendable] (one message at a time,
- * so MMS attachment bytes never all sit in memory at once).
+ * holds both `<sms>` and `<mms>` elements — one message at a time, so MMS attachment
+ * bytes never all sit in memory at once. Header, records and footer each take their own
+ * [Appendable] so [ArchiveDocumentBuilder] can stream records to a body file first.
  *
  * Restore-compat details that bite if wrong:
  *  - `<sms date>` is epoch **ms** (provider-native); `<mms date>` is epoch **seconds**
@@ -17,11 +18,10 @@ import java.util.Base64
  *    and SMIL parts carry `text` instead (the SMIL layout part is kept, not discarded).
  */
 class SmsBackupXmlWriter(
-    private val out: Appendable,
     private val backupDateMs: Long,
     private val backupSet: String,
 ) {
-    fun start(count: Int) {
+    fun header(out: Appendable, count: Int) {
         out.append(Xml.DECLARATION).append('\n')
         out.append("<?xml-stylesheet type=\"text/xsl\" href=\"sms.xsl\"?>").append('\n')
         val header = StringBuilder("<smses")
@@ -33,7 +33,7 @@ class SmsBackupXmlWriter(
         out.append(header).append('\n')
     }
 
-    fun writeSms(r: SmsRecord) {
+    fun sms(out: Appendable, r: SmsRecord) {
         val sb = StringBuilder("  <sms")
             .attr("protocol", r.protocol)
             .attr("address", r.address)
@@ -55,7 +55,7 @@ class SmsBackupXmlWriter(
         out.append(sb).append('\n')
     }
 
-    fun writeMms(r: MmsRecord) {
+    fun mms(out: Appendable, r: MmsRecord) {
         // MMS provider stores `date` in seconds; convert the record's ms back down.
         val dateSeconds = r.dateEpochMs / 1000L
         val open = StringBuilder("  <mms")
@@ -112,7 +112,7 @@ class SmsBackupXmlWriter(
         out.append("  </mms>").append('\n')
     }
 
-    fun finish() {
+    fun footer(out: Appendable) {
         out.append("</smses>").append('\n')
     }
 

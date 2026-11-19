@@ -2,32 +2,28 @@ package com.diffuse.drive
 
 import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
-import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okio.BufferedSink
 import okio.source
-import java.io.File
+import java.io.EOFException
 import java.io.InputStream
 import java.util.concurrent.TimeUnit
 
 /**
- * Tiny HTTP seam so the OAuth device flow ([auth.DeviceAuthClient]) and the Drive
- * REST layer ([DriveClient]) can be unit-tested off-device with a fake, the same way
- * Phase 2 put a `Row` abstraction over `android.database.Cursor`. The real
- * implementation ([OkHttpHttp]) is the only place the network is touched.
+ * Tiny HTTP seam so the OAuth device flow ([auth.DeviceAuthClient]) and the Drive REST
+ * layer ([DriveClient]) can be unit-tested off-device with a fake. The real implementation
+ * ([OkHttpHttp]) is the only place the network is touched.
  *
- * READ-ONLY: this is a network client; it never touches an on-device content
- * provider or the media store, so it has no bearing on the read-only invariant.
+ * READ-ONLY: this is a network client; it never touches an on-device content provider.
  */
 interface Http {
     /**
-     * Perform [method] against [url] with [headers] and an optional [body], returning
-     * the status code and the (UTF-8, fully-buffered) response body. File bodies are
-     * streamed from disk so large videos are never held in memory.
+     * Perform [method] against [url] with [headers] and an optional [body], returning the
+     * status code and the (UTF-8, fully-buffered) response body. Throws an IOException when
+     * no response arrives at all (no network, timeout, connection reset).
      */
     fun request(
         method: String,
@@ -36,41 +32,25 @@ interface Http {
         body: Body? = null,
     ): HttpResp
 
-    /** A request body. File-backed variants stream from disk rather than buffering. */
+    /** A request body. */
     sealed interface Body {
-        /** Raw in-memory bytes (small JSON payloads). */
-        data class Bytes(val bytes: ByteArray, val contentType: String) : Body
+        /** Raw in-memory bytes (small JSON payloads, empty status-check bodies). */
+        class Bytes(val bytes: ByteArray, val contentType: String) : Body
+
         /** application/x-www-form-urlencoded fields (OAuth token calls). */
         data class Form(val fields: Map<String, String>) : Body
-        /** A file streamed as the whole body (Drive resumable-upload PUT). */
-        data class FileBody(val file: File, val contentType: String) : Body
+
         /**
-         * Drive simple-upload `multipart/related`: a JSON [metadataJson] part followed
-         * by [file] streamed as the media part with [mediaContentType].
+         * Exactly [length] bytes starting [offset] bytes into the stream that [open] yields.
+         * [open] must return a fresh stream on every call (OkHttp may write the body more
+         * than once, and a resumed upload starts part-way through). Nothing is buffered in
+         * memory, so a multi-GB video streams provider→Drive through a small copy buffer.
          */
-        data class RelatedFile(
-            val metadataJson: String,
-            val file: File,
-            val mediaContentType: String,
-        ) : Body
-        /**
-         * Like [FileBody] but streamed from a content provider (or any source) rather than a
-         * file on disk — [open] yields a fresh [InputStream] each time it's called (OkHttp may
-         * re-read the body on retry), and [length] is the known content length. Nothing is
-         * buffered in memory, so a multi-GB video streams provider→Drive with a copy of ~64 KB.
-         * READ-ONLY: [open] opens the provider stream in read ("r") mode; this never writes back.
-         */
-        class StreamBody(
+        class Stream(
             val open: () -> InputStream,
+            val offset: Long,
             val length: Long,
             val contentType: String,
-        ) : Body
-        /** [RelatedFile] with the media part streamed from [open] (see [StreamBody]). */
-        class RelatedStream(
-            val metadataJson: String,
-            val open: () -> InputStream,
-            val length: Long,
-            val mediaContentType: String,
         ) : Body
     }
 }
@@ -86,8 +66,8 @@ data class HttpResp(val code: Int, val body: String, val headers: Map<String, St
 class OkHttpHttp(
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .writeTimeout(120, TimeUnit.SECONDS)
         .build(),
 ) : Http {
     override fun request(
@@ -102,19 +82,8 @@ class OkHttpHttp(
             is Http.Body.Form -> body.fields.entries
                 .joinToString("&") { (k, v) -> "${enc(k)}=${enc(v)}" }
                 .toRequestBody(FORM.toMediaType())
-            is Http.Body.FileBody -> body.file.asRequestBody(body.contentType.toMediaType())
-            is Http.Body.RelatedFile -> MultipartBody.Builder()
-                .setType("multipart/related".toMediaType())
-                .addPart(body.metadataJson.toRequestBody(JSON.toMediaType()))
-                .addPart(body.file.asRequestBody(body.mediaContentType.toMediaType()))
-                .build()
-            is Http.Body.StreamBody ->
-                StreamRequestBody(body.open, body.length, body.contentType.toMediaType())
-            is Http.Body.RelatedStream -> MultipartBody.Builder()
-                .setType("multipart/related".toMediaType())
-                .addPart(body.metadataJson.toRequestBody(JSON.toMediaType()))
-                .addPart(StreamRequestBody(body.open, body.length, body.mediaContentType.toMediaType()))
-                .build()
+            is Http.Body.Stream ->
+                StreamRequestBody(body.open, body.offset, body.length, body.contentType.toMediaType())
         }
         val builder = Request.Builder().url(url).method(method, reqBody)
         headers.forEach { (k, v) -> builder.header(k, v) }
@@ -126,25 +95,47 @@ class OkHttpHttp(
 
     private fun enc(s: String) = java.net.URLEncoder.encode(s, "UTF-8")
 
-    /**
-     * Streams a request body from a re-openable source with a known length. [writeTo] can be
-     * called more than once (OkHttp retries), so it re-opens the stream each time and copies
-     * straight into the network sink — the bytes are never held in memory.
-     */
-    private class StreamRequestBody(
-        private val open: () -> InputStream,
-        private val length: Long,
-        private val mediaType: MediaType,
-    ) : RequestBody() {
-        override fun contentType(): MediaType = mediaType
-        override fun contentLength(): Long = length
-        override fun writeTo(sink: BufferedSink) {
-            open().use { input -> sink.writeAll(input.source()) }
+    private companion object {
+        const val FORM = "application/x-www-form-urlencoded"
+    }
+}
+
+/**
+ * Writes exactly [length] bytes from [offset] of a re-openable source. Copying a fixed
+ * count (rather than "until end of stream") means a file that grows while it uploads
+ * can't break the declared Content-Length; a file that shrank fails with EOFException.
+ *
+ * One-shot: if the connection drops mid-body, OkHttp must not quietly replay it from byte 0
+ * (its retry-on-connection-failure would, re-sending a whole video). The failure surfaces to
+ * [DriveClient] instead, which asks Drive how much arrived and resumes from there.
+ */
+internal class StreamRequestBody(
+    private val open: () -> InputStream,
+    private val offset: Long,
+    private val length: Long,
+    private val mediaType: MediaType,
+) : RequestBody() {
+    override fun contentType(): MediaType = mediaType
+    override fun contentLength(): Long = length
+    override fun isOneShot(): Boolean = true
+    override fun writeTo(sink: BufferedSink) {
+        open().use { input ->
+            input.skipExactly(offset)
+            sink.write(input.source(), length)
         }
     }
 
-    private companion object {
-        const val FORM = "application/x-www-form-urlencoded"
-        const val JSON = "application/json; charset=UTF-8"
+    private fun InputStream.skipExactly(n: Long) {
+        var left = n
+        while (left > 0) {
+            val skipped = skip(left)
+            if (skipped > 0) {
+                left -= skipped
+            } else if (read() == -1) {
+                throw EOFException("stream ended $left bytes before the resume offset")
+            } else {
+                left--
+            }
+        }
     }
 }

@@ -2,14 +2,14 @@ package com.diffuse
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
-import com.diffuse.ui.BackupController
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.diffuse.ui.BackupViewModel
 import com.diffuse.ui.ConnectScreen
 import com.diffuse.ui.HomeScreen
 import com.diffuse.ui.SettingsScreen
@@ -18,7 +18,7 @@ import com.diffuse.work.BackupSettings
 import com.thelightphone.sdk.ui.LightTheme
 import com.thelightphone.sdk.ui.LightThemeColors
 
-/** The three top-level screens. Flat nav is enough — there's no back stack to speak of. */
+/** The three top-level screens. Flat nav is enough: there's no back stack to speak of. */
 private enum class Screen { Home, Connect, Settings }
 
 class MainActivity : ComponentActivity() {
@@ -31,34 +31,33 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             // Fixed dark palette (white on black). Light/dark is a device-level setting on the
-            // LP3, handled by the OS — the app doesn't offer its own toggle.
-            val context = LocalContext.current
-            // One controller shared across screens so state (connection, account) stays consistent.
-            val controller = remember { BackupController(context) }
-            // A scope tied to the Activity, not any one screen, so the sign-in poll keeps running
-            // when we navigate from Connect back to Home while waiting for approval.
-            val scope = rememberCoroutineScope()
-            var screen by remember { mutableStateOf(Screen.Home) }
+            // LP3, handled by the OS; the app doesn't offer its own toggle.
+            val vm: BackupViewModel = viewModel()
+            // Saveable, so rotation or a theme change doesn't bounce the user back to Home.
+            var screen by rememberSaveable { mutableStateOf(Screen.Home) }
+            // System back from a sub-screen returns Home instead of closing the app.
+            BackHandler(enabled = screen != Screen.Home) { screen = Screen.Home }
+
             LightTheme(colors = LightThemeColors.Dark) {
                 when (screen) {
                     Screen.Home -> HomeScreen(
-                        controller = controller,
+                        vm = vm,
                         onOpenSettings = { screen = Screen.Settings },
                         onConnect = {
-                            controller.connect(scope)
+                            vm.connect()
                             screen = Screen.Connect
                         },
                     )
                     Screen.Connect -> ConnectScreen(
-                        controller = controller,
+                        vm = vm,
                         onBack = { screen = Screen.Home },
-                        onRetry = { controller.connect(scope) },
+                        onRetry = { vm.connect() },
                     )
                     Screen.Settings -> SettingsScreen(
-                        controller = controller,
+                        vm = vm,
                         onBack = { screen = Screen.Home },
                         onSignOut = {
-                            controller.signOut()
+                            vm.signOut()
                             screen = Screen.Home
                         },
                     )

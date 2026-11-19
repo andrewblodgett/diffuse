@@ -1,7 +1,5 @@
 package com.diffuse.restore
 
-import com.diffuse.backup.model.BackupItem
-
 /**
  * DESIGN SEAM — NOT IMPLEMENTED IN THIS BUILD.
  *
@@ -33,7 +31,7 @@ import com.diffuse.backup.model.BackupItem
  * Until then, the only supported restore path is external: download the archive from Drive and
  * restore the messages/calls with the SMS Backup & Restore app on a target phone.
  */
-interface RestoreSink {
+interface RestoreSink<T> {
 
     /** Stable identifier for the destination this sink writes, e.g. "sms", "call_log". */
     val id: String
@@ -43,5 +41,5 @@ interface RestoreSink {
      * concrete `RestoreSink` ships in this build; see the class docs and `docs/restore-design.md`
      * for the safety contract a future implementation must satisfy before it can.
      */
-    fun restore(item: BackupItem)
+    fun restore(item: T)
 }

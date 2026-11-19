@@ -1,8 +1,9 @@
-name: read-only guard
+name: ci
 
-# Enforces the core invariant on every push/PR: Diffuse never mutates on-device
-# data. This is a static check (grep over source + manifest) and needs no Android
-# SDK, so it runs on a bare runner in seconds.
+# Runs on every push/PR:
+#  - the read-only guard (the core invariant: Diffuse never mutates on-device data), plus a
+#    self-test proving the guard still catches planted violations. Plain bash, seconds.
+#  - the unit tests and Android lint.
 on:
   push:
   pull_request:
@@ -14,3 +15,32 @@ jobs:
       - uses: actions/checkout@v4
       - name: Diffuse must never mutate on-device data
         run: bash scripts/check-readonly.sh
+      - name: The guard still catches planted violations
+        run: bash scripts/test-check-readonly.sh
+
+  test-and-lint:
+    runs-on: ubuntu-latest   # ships with the Android SDK preinstalled (ANDROID_HOME is set)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest
+
+      - name: Android lint
+        run: ./gradlew :app:lintDebug
+
+      - name: Upload test and lint reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports
+          path: app/build/reports/

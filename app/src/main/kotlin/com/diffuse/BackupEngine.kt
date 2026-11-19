@@ -1,133 +1,288 @@
 package com.diffuse
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.Uri
+import android.provider.MediaStore
+import com.diffuse.backup.BackupContent
 import com.diffuse.backup.BackupProgress
 import com.diffuse.backup.BackupRunner
-import com.diffuse.work.BackupSettings
+import com.diffuse.backup.BackupSources
+import com.diffuse.backup.BackupStage
+import com.diffuse.backup.BackupSummary
+import com.diffuse.backup.RunSummaryText
+import com.diffuse.backup.provider.from
 import com.diffuse.backup.store.LastRun
 import com.diffuse.backup.store.LastRunStore
-import com.diffuse.drive.BackupReconciler
 import com.diffuse.drive.DriveClient
 import com.diffuse.drive.DriveFileSink
 import com.diffuse.drive.DriveFolderTree
+import com.diffuse.drive.DriveInventory
 import com.diffuse.drive.DriveMediaSink
 import com.diffuse.drive.OkHttpHttp
 import com.diffuse.drive.auth.AccessTokenProvider
+import com.diffuse.drive.auth.AuthRevokedException
 import com.diffuse.drive.auth.DeviceAuthClient
+import com.diffuse.drive.auth.TokenResponse
 import com.diffuse.drive.store.EncryptedDriveCredentialStore
-import com.diffuse.drive.store.UploadManifest
+import com.diffuse.drive.store.LegacyManifest
+import com.diffuse.drive.store.RecentUploads
+import com.diffuse.util.causeOfType
+import com.diffuse.work.BackupSettings
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.sync.Mutex
 import java.io.File
-import java.io.IOException
+import java.io.FileNotFoundException
+import java.io.InputStream
+import java.time.YearMonth
+
+/** Live progress of the run in progress. */
+data class RunProgress(
+    val stage: BackupStage? = null,
+    val photoDone: Int = 0,
+    val photoTotal: Int = 0,
+    val videoDone: Int = 0,
+    val videoTotal: Int = 0,
+)
+
+/** How a call to [BackupEngine.runBackup] ended, other than by throwing. */
+sealed interface RunOutcome {
+    /** The run finished. [summaryText] is what was recorded as the last run. */
+    data class Completed(val summary: BackupSummary, val summaryText: String) : RunOutcome {
+        val failedItems: Int get() = summary.failedItems
+    }
+
+    /** Another run was already in progress, so this one did nothing. */
+    data object AlreadyRunning : RunOutcome
+
+    /** Drive isn't connected (or the build has no Drive credentials). */
+    data object NotConnected : RunOutcome
+
+    /** Every category is turned off in Settings. */
+    data object NothingSelected : RunOutcome
+
+    /** Categories are selected, but none has its read permission granted. */
+    data object NeedsPermission : RunOutcome
+}
 
 /**
- * The whole backup stack in one place — the shared engine behind both the interactive
- * [com.diffuse.ui.BackupController] (the "Back up now" button) and the scheduled
- * [com.diffuse.work.BackupWorker], so a manual run and an automatic run do *exactly* the same
- * thing. It owns the Drive plumbing (auth, client, manifest) and the last-run record, and
- * exposes [runBackup] to execute one full extract→stream→upload pass.
+ * The whole backup stack in one place, and one per process ([get]). Both entry points (the
+ * "Back up now" button and the schedule) run through [com.diffuse.work.BackupWorker], which
+ * calls [runBackup] here, so a manual run and an automatic run do *exactly* the same thing.
  *
- * READ-ONLY: reads the providers (via [BackupRunner], opening media streams in "r" mode) and
- * writes only to our own files and to Drive; nothing mutates a content provider.
+ * Being a singleton with a [Mutex] means two runs can never overlap: overlapping runs used to
+ * upload the same photos twice and race to create the `Diffuse` folder. It also means the UI
+ * observes one source of truth ([progress], [lastRun], [connected], [accountEmail]) whether
+ * a run was started by a tap or by the schedule.
+ *
+ * READ-ONLY: reads the providers (media streams in "r" mode) and writes only to our own files
+ * and to Drive; nothing mutates a content provider.
  */
-class BackupEngine(context: Context) {
+class BackupEngine private constructor(context: Context) {
 
     private val app = context.applicationContext
-    private val outputDir = File(app.filesDir, "backup")
+    private val workDir = File(app.filesDir, "backup")
 
     private val http = OkHttpHttp()
     private val credentialStore = EncryptedDriveCredentialStore(app)
     val auth = DeviceAuthClient(http, BuildConfig.DRIVE_CLIENT_ID, BuildConfig.DRIVE_CLIENT_SECRET)
-    val tokenProvider = AccessTokenProvider(auth, credentialStore)
+    private val tokenProvider = AccessTokenProvider(auth, credentialStore)
     private val driveClient = DriveClient(http, tokenProvider)
-    // One manifest shared by streamed media (`media/…` keys) and the XML docs (`*.xml` keys).
-    private val manifest = UploadManifest(File(app.filesDir, "upload-manifest.properties"))
     private val lastRunStore = LastRunStore(File(app.filesDir, "last-run.properties"))
+    private val recentUploads = RecentUploads(File(app.filesDir, "recent-uploads.tsv"))
+    private val legacyManifest = LegacyManifest(File(app.filesDir, "upload-manifest.properties"))
     private val settings = BackupSettings(app)
-    // If Drive no longer has something the manifest thinks is already backed up (e.g. the user
-    // emptied the Diffuse folder), this catches it before extraction starts. See its doc.
-    private val reconciler = BackupReconciler(driveClient, manifest)
 
-    /** True once a Drive refresh token is stored (the QR sign-in completed at least once). */
-    val isConnected: Boolean get() = credentialStore.isConnected
+    private val runLock = Mutex()
+    private val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /** Forget the stored Drive credentials — the user must re-scan the QR to reconnect. */
-    fun signOut() = credentialStore.clear()
+    private val _connected = MutableStateFlow(credentialStore.isConnected)
+    private val _accountEmail = MutableStateFlow(credentialStore.accountEmail)
+    private val _lastRun = MutableStateFlow(lastRunStore.get())
+    private val _progress = MutableStateFlow<RunProgress?>(null)
 
-    /** The connected account's email as last cached, or null if unknown / not connected. */
-    val accountEmail: String? get() = credentialStore.accountEmail
+    /** True once a Drive refresh token is stored (the QR sign-in completed). */
+    val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
-    /**
-     * Fetch the connected account's email from Drive and cache it for display; returns the fresh
-     * value (or the cached one if the network call fails). Requires a valid token, so only call
-     * while connected. Blocking — run off the main thread.
-     */
-    fun refreshAccountEmail(): String? =
-        driveClient.accountEmail()?.also { credentialStore.accountEmail = it } ?: credentialStore.accountEmail
+    /** The connected account's email, once known. */
+    val accountEmail: StateFlow<String?> = _accountEmail.asStateFlow()
+
+    /** The most recent run's outcome, persisted across launches. */
+    val lastRun: StateFlow<LastRun?> = _lastRun.asStateFlow()
+
+    /** Progress of the run in progress, or null when no run is active. */
+    val progress: StateFlow<RunProgress?> = _progress.asStateFlow()
 
     /** False when the build has no Drive client id (see docs/drive-setup.md). */
     val credentialsConfigured: Boolean get() = BuildConfig.DRIVE_CLIENT_ID.isNotBlank()
 
-    fun lastRun(): LastRun? = lastRunStore.get()
+    // --- Connection -------------------------------------------------------------------------
 
-    /** Outcome of one [runBackup] pass. */
-    data class RunResult(
-        val summary: String,
-        val smsCount: Int,
-        val mmsCount: Int,
-        val callCount: Int,
-        val mediaStreamed: Int,
-        val mediaSkipped: Int,
-    )
+    /** Store the tokens from a completed QR sign-in and look up the account's email. */
+    fun onSignedIn(tokens: TokenResponse) {
+        recentUploads.clear() // it describes whichever account was connected before
+        tokenProvider.onSignedIn(tokens)
+        _connected.value = true
+        background.launch { refreshAccountEmail() }
+    }
+
+    /** Fetch the account email if it isn't known yet (e.g. connected before this was shown). */
+    fun refreshAccountEmailIfMissing() {
+        if (_connected.value && _accountEmail.value == null) background.launch { refreshAccountEmail() }
+    }
+
+    private fun refreshAccountEmail() {
+        driveClient.accountEmail()?.let {
+            credentialStore.accountEmail = it
+            _accountEmail.value = it
+        }
+    }
 
     /**
-     * Execute one backup: resolve the Drive root, then extract and upload call log, messages,
-     * photos, and videos in that fixed order (see [BackupRunner]) — each media original streams
-     * straight provider→Drive with no local copy (skipped if already in the manifest), and each
-     * XML doc is written in full and uploaded (or overwritten in place) immediately after, then
-     * persist a success [LastRun]. Reports through
-     * [progress]. Throws on failure (callers should surface it and call [recordFailure]); a
-     * single unreadable item is skipped inside the runner and never aborts the pass.
+     * Forget the Drive connection, and ask Google to revoke the token so it stops working
+     * everywhere (best-effort; signing out works offline too). The user re-scans the QR to
+     * reconnect.
      */
-    suspend fun runBackup(progress: BackupProgress = BackupProgress.NONE): RunResult {
-        reconciler.reconcile()
-        val rootId = driveClient.ensureFolder(ROOT_FOLDER)
+    fun signOut() {
+        val token = credentialStore.refreshToken
+        forgetCredentials()
+        if (token != null) background.launch { auth.revoke(token) }
+    }
+
+    private fun forgetCredentials() {
+        credentialStore.clear()
+        recentUploads.clear()
+        _connected.value = false
+        _accountEmail.value = null
+    }
+
+    // --- Running ----------------------------------------------------------------------------
+
+    /**
+     * Run one backup: list what's on Drive, then export and upload call log, messages, photos
+     * and videos in that order (see [BackupRunner]), and record the result as [lastRun].
+     *
+     * Categories turned off in Settings are skipped, and so are categories whose permission
+     * isn't granted (noted in the summary). Returns [RunOutcome.AlreadyRunning] at once if
+     * another run holds the lock.
+     *
+     * @throws Exception caused by [AuthRevokedException] (possibly wrapped) after
+     *   disconnecting, if Google no longer accepts the stored sign-in; the user has to reconnect.
+     * @throws Exception for any other failure, after recording it as the last run. Network
+     *   problems are worth retrying later; the next run picks up where this one stopped.
+     */
+    suspend fun runBackup(): RunOutcome {
+        if (!credentialsConfigured || !_connected.value) return RunOutcome.NotConnected
+        val selected = settings.prefsValue.content
+        if (selected.isEmpty) return RunOutcome.NothingSelected
+        val included = selected intersect BackupPermissions.permitted(app)
+        if (included.isEmpty) return RunOutcome.NeedsPermission
+        if (!runLock.tryLock()) return RunOutcome.AlreadyRunning
+
+        _progress.value = RunProgress()
+        try {
+            val summary = runPass(included)
+            val text = RunSummaryText.describe(summary, included, skippedForPermission = selected - included)
+            record(LastRun(System.currentTimeMillis(), success = true, summary = text, failedItems = summary.failedItems))
+            // Every media item on the phone has now been matched to Drive, so the 0.1.x manifest
+            // has nothing left to contribute.
+            if (included.pictures && included.videos && summary.failedItems == 0) legacyManifest.retire()
+            return RunOutcome.Completed(summary, text)
+        } catch (e: CancellationException) {
+            throw e // stopped by the system (e.g. Wi-Fi lost); WorkManager runs it again later
+        } catch (e: Exception) {
+            val revoked = e.causeOfType<AuthRevokedException>()
+            if (revoked != null) forgetCredentials()
+            val message = (revoked ?: e).message ?: e.javaClass.simpleName
+            record(LastRun(System.currentTimeMillis(), success = false, summary = message))
+            throw e
+        } finally {
+            _progress.value = null
+            workDir.deleteRecursively()
+            runLock.unlock()
+        }
+    }
+
+    private suspend fun runPass(content: BackupContent): BackupSummary {
+        workDir.deleteRecursively() // leftovers from a run that was killed mid-way
+        val inventory = runInterruptible(Dispatchers.IO) {
+            DriveInventory.load(driveClient, recentUploads, legacyManifest.mediaPaths())
+        }
+        val rootId = runInterruptible(Dispatchers.IO) { driveClient.ensureFolder(ROOT_FOLDER) }
         val folders = DriveFolderTree(driveClient, rootId)
+        val readOriginal = BackupPermissions.canReadPhotoLocation(app)
         val mediaSink = DriveMediaSink(
-            openStream = { uri ->
-                app.contentResolver.openInputStream(Uri.parse(uri))
-                    ?: throw IOException("cannot open $uri")
-            },
-            // Real byte length from the file descriptor — robust to MediaStore _size=0.
-            lengthOf = { uri ->
-                app.contentResolver.openFileDescriptor(Uri.parse(uri), "r")?.use { it.statSize } ?: -1L
-            },
+            openStream = { uri -> openMedia(uri, readOriginal) },
+            lengthOf = { uri -> mediaLength(uri, readOriginal) },
             drive = driveClient,
             folders = folders,
-            manifest = manifest,
+            inventory = inventory,
         )
-        val fileSink = DriveFileSink(driveClient, folders, manifest)
         val runner = BackupRunner(
-            app.contentResolver, outputDir, mediaSink, fileSink, progress,
-            content = settings.prefsValue.content,
+            sources = BackupSources.from(app.contentResolver),
+            workDir = workDir,
+            month = YearMonth.now(),
+            mediaSink = mediaSink,
+            fileSink = DriveFileSink(driveClient, folders, inventory),
+            progress = progressListener,
+            content = content,
         )
-        val s = runner.run()
-        // Every doc was already uploaded by fileSink as the runner produced it; the local copies
-        // are safely on Drive now, so there's no reason to keep them piling up run after run.
-        outputDir.listFiles()?.forEach { it.deleteRecursively() }
-
-        val summary = "${s.smsCount} SMS, ${s.mmsCount} MMS, ${s.callCount} calls; " +
-            "media streamed ${mediaSink.uploaded}, skipped ${mediaSink.skipped}"
-        lastRunStore.put(LastRun(System.currentTimeMillis(), success = true, summary = summary))
-        return RunResult(summary, s.smsCount, s.mmsCount, s.callCount, mediaSink.uploaded, mediaSink.skipped)
+        return runner.run()
     }
 
-    /** Persist a failed [LastRun] so the home screen shows the failure after the process ends. */
-    fun recordFailure(message: String) {
-        lastRunStore.put(LastRun(System.currentTimeMillis(), success = false, summary = message))
+    /** Feeds [progress] from the runner's callbacks. */
+    private val progressListener = object : BackupProgress {
+        override fun onStage(stage: BackupStage) = _progress.update { it?.copy(stage = stage) }
+        override fun onPhotoProgress(done: Int, total: Int) =
+            _progress.update { it?.copy(photoDone = done, photoTotal = total) }
+        override fun onVideoProgress(done: Int, total: Int) =
+            _progress.update { it?.copy(videoDone = done, videoTotal = total) }
     }
 
-    private companion object {
-        const val ROOT_FOLDER = "Diffuse"
+    /**
+     * The URI to read a media item's bytes from. Android strips GPS location out of photos
+     * and videos for apps that don't ask for the original, even when they hold
+     * ACCESS_MEDIA_LOCATION, so when that permission is granted we ask for the original.
+     */
+    private fun mediaUri(uri: String, readOriginal: Boolean): Uri {
+        val parsed = Uri.parse(uri)
+        return if (readOriginal) MediaStore.setRequireOriginal(parsed) else parsed
+    }
+
+    private fun openMedia(uri: String, readOriginal: Boolean): InputStream =
+        app.contentResolver.openInputStream(mediaUri(uri, readOriginal))
+            ?: throw FileNotFoundException("cannot open $uri")
+
+    /** Real byte length from the file descriptor (MediaStore's `_size` is unreliable on the LP3). */
+    private fun mediaLength(uri: String, readOriginal: Boolean): Long =
+        app.contentResolver.openFileDescriptor(mediaUri(uri, readOriginal), "r")?.use { it.statSize } ?: -1L
+
+    private fun record(run: LastRun) {
+        lastRunStore.put(run)
+        _lastRun.value = run
+    }
+
+    companion object {
+        private const val ROOT_FOLDER = "Diffuse"
+
+        // Holds only the application context, which lives as long as the process: not a leak.
+        @SuppressLint("StaticFieldLeak")
+        @Volatile
+        private var instance: BackupEngine? = null
+
+        /** The process-wide engine. */
+        fun get(context: Context): BackupEngine =
+            instance ?: synchronized(this) {
+                instance ?: BackupEngine(context.applicationContext).also { instance = it }
+            }
     }
 }

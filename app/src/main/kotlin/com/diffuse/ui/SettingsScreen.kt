@@ -16,17 +16,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.diffuse.work.BackupFrequency
 import com.diffuse.work.BackupPrefs
 import com.diffuse.work.BackupScheduler
@@ -44,16 +43,12 @@ import java.util.Calendar
  * WorkManager via [BackupScheduler.sync]. Defaults come from [BackupPrefs].
  */
 @Composable
-fun SettingsScreen(controller: BackupController, onBack: () -> Unit, onSignOut: () -> Unit) {
+fun SettingsScreen(vm: BackupViewModel, onBack: () -> Unit, onSignOut: () -> Unit) {
     val colors = LightThemeTokens.colors
     val context = LocalContext.current
     val settings = remember { BackupSettings(context) }
     var prefs by remember { mutableStateOf(settings.prefsValue) }
-    val scope = rememberCoroutineScope()
-
-    // Look up the connected account's email if we don't have it yet (e.g. signed in before this
-    // feature existed); once cached it shows instantly with no network call.
-    LaunchedEffect(Unit) { controller.refreshAccountEmail(scope) }
+    val accountEmail by vm.accountEmail.collectAsStateWithLifecycle()
 
     fun update(new: BackupPrefs) {
         val old = prefs
@@ -143,7 +138,7 @@ fun SettingsScreen(controller: BackupController, onBack: () -> Unit, onSignOut: 
             Spacer(Modifier.height(8.dp))
             SectionLabel("Account")
             LightText(
-                text = controller.accountEmail?.let { "Signed in as $it" } ?: "Connected to Google Drive",
+                text = accountEmail?.let { "Signed in as $it" } ?: "Connected to Google Drive",
                 variant = Body,
             )
             Spacer(Modifier.height(4.dp))

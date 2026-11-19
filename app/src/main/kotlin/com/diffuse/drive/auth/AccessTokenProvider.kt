@@ -12,6 +12,9 @@ interface AccessTokens {
  * Yields a valid Google access token on demand, refreshing transparently. [DriveClient]
  * calls [validAccessToken] before each request and [forceRefresh] after a 401.
  *
+ * Synchronized, so two threads that find the token expired at the same moment refresh it
+ * once rather than racing to overwrite each other's result.
+ *
  * Pure logic over [DeviceAuthClient] + [DriveCredentialStore]; unit-tested with fakes.
  */
 class AccessTokenProvider(
@@ -24,6 +27,7 @@ class AccessTokenProvider(
     class NotConnectedException : IllegalStateException("Drive is not connected — sign in first")
 
     /** Persist the tokens returned by a successful device-flow sign-in. */
+    @Synchronized
     fun onSignedIn(tokens: TokenResponse) {
         store.save(
             refreshToken = tokens.refreshToken ?: store.refreshToken,
@@ -33,13 +37,18 @@ class AccessTokenProvider(
     }
 
     /** A currently-valid access token, refreshing via the refresh token if needed. */
+    @Synchronized
     override fun validAccessToken(): String {
         val cached = store.accessToken
         if (cached != null && now() < store.accessTokenExpiryMs - skewMs) return cached
         return forceRefresh()
     }
 
-    /** Force a refresh (e.g. after the server rejects the cached token with 401). */
+    /**
+     * Force a refresh (e.g. after the server rejects the cached token with 401).
+     * @throws AuthRevokedException if the refresh token itself is no longer valid.
+     */
+    @Synchronized
     override fun forceRefresh(): String {
         val refresh = store.refreshToken ?: throw NotConnectedException()
         val tokens = auth.refresh(refresh)

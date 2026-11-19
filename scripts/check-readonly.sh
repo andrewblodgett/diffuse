@@ -20,7 +20,7 @@ note() { printf '  - %s\n' "$*"; }
 # `path:lineno:`) begins with a Kotlin/Java comment marker (//, *, /*). This keeps
 # doc comments that mention these APIs from tripping the guard.
 scan() { # $1 = pattern, $2 = dir
-  grep -rnE --include='*.kt' --include='*.java' "$1" "$2" 2>/dev/null \
+  grep -rnHE --include='*.kt' --include='*.java' "$1" "$2" 2>/dev/null \
     | grep -vE ':[0-9]+:[[:space:]]*(//|\*|/\*)' || true
 }
 
@@ -46,12 +46,21 @@ else
 fi
 
 # --- 2. Source: no provider-mutating calls -------------------------------------
-# Curated, low-false-positive patterns. We never write to a ContentProvider, never
-# build a MediaStore write/delete/trash request, never open an output stream, and
-# never open a provider file descriptor in a writable mode.
+# We never write to a ContentProvider, never build a MediaStore write/delete/trash
+# request, never open an output stream, and never open a provider file descriptor in a
+# writable mode.
+#
+# A grep can't see types, so a call like `resolver.delete(uri, …)` can't be recognised by
+# its receiver (the field might be called anything). Instead mutations are caught three
+# ways: method names that only providers have, the shape of a provider call (insert /
+# update / delete whose first argument is a URI), and, in any file that touches a
+# ContentResolver at all, those method names outright.
 echo "[2/3] Scanning ${SRC_DIRS[*]} for provider-mutating calls..."
+URI_ARG='(Uri\b|Uri\.|ContentUris\.|MediaStore\.|Telephony\.|CallLog\.|[A-Za-z_][A-Za-z0-9_]*(Uri|URI)\b)'
 MUTATION_PATTERNS=(
-  '(getContentResolver\(\)|contentResolver)\.(insert|update|delete|bulkInsert|applyBatch)\b'
+  '\.(bulkInsert|applyBatch)\('
+  'acquire(Unstable)?ContentProviderClient'
+  "\\.(insert|update|delete)\\([[:space:]]*${URI_ARG}"
   '\.openOutputStream\('
   'openFileDescriptor\([^)]*"[^"]*[wa][^"]*"'      # any mode containing w/a (write/append)
   'openAssetFileDescriptor\([^)]*"[^"]*[wa][^"]*"'
@@ -68,6 +77,19 @@ for dir in "${SRC_DIRS[@]}"; do
       fail=1
     fi
   done
+done
+
+# Files that use a ContentResolver may not call insert/update/delete/call on anything.
+# (Kotlin's `MutableStateFlow.update { … }` takes a lambda, not parentheses, so it's fine.)
+resolver_files="$(grep -rlE --include='*.kt' --include='*.java' \
+  '\b(ContentResolver|contentResolver|getContentResolver|ContentProviderClient)\b' "${SRC_DIRS[@]}" 2>/dev/null || true)"
+for f in $resolver_files; do
+  hits="$(scan '\.(insert|update|delete|call)\(' "$f")"
+  if [[ -n "$hits" ]]; then
+    echo "VIOLATION: insert/update/delete/call in a file that uses a ContentResolver:"
+    printf '%s\n' "$hits" | while read -r h; do note "$h"; done
+    fail=1
+  fi
 done
 
 # --- 3. Source: never request the default-SMS role -----------------------------

@@ -2,22 +2,20 @@ package com.diffuse.backup.provider
 
 import android.content.ContentResolver
 import android.provider.Telephony
-import com.diffuse.backup.model.BackupItem
+import com.diffuse.backup.model.SmsRecord
 
 /**
- * Extracts SMS from `content://sms`. Token = `date` (epoch **ms**, native units).
+ * Extracts SMS from `content://sms`, oldest first.
  * READ-ONLY: reads the telephony provider; the app declares only READ_SMS and never
  * takes the default-SMS role, so any write would throw SecurityException anyway.
  */
-class SmsSource(resolver: ContentResolver) : ContentProviderSource(
+class SmsSource(resolver: ContentResolver) : ContentProviderSource<SmsRecord>(
     resolver = resolver,
     uri = Telephony.Sms.CONTENT_URI,
     projection = PROJECTION,
-    tokenColumn = "date",
+    sortColumn = "date",
 ) {
-    override val id: String get() = "sms"
-
-    override fun map(row: Row): BackupItem? = SmsMapper.map(row)
+    override fun map(row: Row): SmsRecord? = SmsMapper.map(row)
 
     private companion object {
         val PROJECTION = arrayOf(

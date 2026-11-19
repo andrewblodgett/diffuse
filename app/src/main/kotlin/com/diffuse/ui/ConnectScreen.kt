@@ -14,10 +14,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.thelightphone.sdk.ui.LightText
 import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightThemeTokens
@@ -26,19 +28,20 @@ import com.thelightphone.sdk.ui.lightClickable
 /**
  * Full-screen Drive sign-in: a large white-on-black QR plus the verification link and the code to
  * type, so the user can connect either way without anything crowding the screen. Reads live state
- * from [controller] (started by the caller before navigating here) and returns home automatically
- * the moment the connection lands.
+ * from [vm] (the sign-in is started by the caller before navigating here) and returns home
+ * automatically the moment the connection lands.
  *
  * @param onBack leave this screen (also the auto-return target once connected).
- * @param onRetry restart the device-flow after an error/expiry (launched on a screen-independent
- *   scope by the caller so it survives navigation).
+ * @param onRetry restart the device-flow after an error/expiry (it runs in the ViewModel, so it
+ *   survives navigation and rotation).
  */
 @Composable
-fun ConnectScreen(controller: BackupController, onBack: () -> Unit, onRetry: () -> Unit) {
+fun ConnectScreen(vm: BackupViewModel, onBack: () -> Unit, onRetry: () -> Unit) {
     val colors = LightThemeTokens.colors
+    val connected by vm.connected.collectAsStateWithLifecycle()
 
-    // The instant the poll reports success, controller.connected flips → go home.
-    LaunchedEffect(controller.connected) { if (controller.connected) onBack() }
+    // The instant the poll reports success, connected flips → go home.
+    LaunchedEffect(connected) { if (connected) onBack() }
 
     Box(
         modifier = Modifier
@@ -66,11 +69,11 @@ fun ConnectScreen(controller: BackupController, onBack: () -> Unit, onRetry: () 
         ) {
             LightText(text = "Connect Google Drive", variant = LightTextVariant.Heading, align = TextAlign.Center)
 
-            val qr = controller.qr
+            val qr = vm.qr
             when {
-                controller.phase == Phase.Error -> {
+                vm.signInPhase == SignInPhase.Failed -> {
                     LightText(
-                        text = controller.message ?: "Sign-in failed.",
+                        text = vm.signInMessage ?: "Sign-in failed.",
                         variant = Body,
                         align = TextAlign.Center,
                     )
@@ -85,10 +88,10 @@ fun ConnectScreen(controller: BackupController, onBack: () -> Unit, onRetry: () 
                     )
                     Image(bitmap = qr, contentDescription = "Sign-in QR code", modifier = Modifier.size(248.dp))
 
-                    controller.verificationUrl?.let {
+                    vm.verificationUrl?.let {
                         LightText(text = it, variant = Body, align = TextAlign.Center)
                     }
-                    controller.userCode?.let {
+                    vm.userCode?.let {
                         Spacer(Modifier.height(4.dp))
                         LightText(text = "Enter this code", variant = Body, align = TextAlign.Center)
                         LightText(
@@ -102,7 +105,7 @@ fun ConnectScreen(controller: BackupController, onBack: () -> Unit, onRetry: () 
 
                 else -> {
                     LightText(
-                        text = controller.message ?: "Preparing sign-in…",
+                        text = "Preparing sign-in…",
                         variant = Body,
                         align = TextAlign.Center,
                     )

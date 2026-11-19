@@ -24,12 +24,6 @@ internal inline fun ContentResolver.forEachRow(
     }
 }
 
-/** Number of rows a query would return, without materialising them. */
-internal fun ContentResolver.countRows(
-    uri: Uri,
-    selection: String?,
-    selectionArgs: Array<String>?,
-): Int {
-    query(uri, arrayOf("_id"), selection, selectionArgs, null)?.use { return it.count }
-    return 0
-}
+/** Number of rows in [uri], without materialising them. */
+internal fun ContentResolver.countRows(uri: Uri): Int =
+    query(uri, arrayOf("_id"), null, null, null)?.use { it.count } ?: 0

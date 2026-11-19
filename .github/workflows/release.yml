@@ -42,6 +42,11 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           echo "name=${TAG#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Read-only guard and unit tests
+        run: |
+          bash scripts/check-readonly.sh
+          ./gradlew :app:testDebugUnitTest
+
       - name: Decode release keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}

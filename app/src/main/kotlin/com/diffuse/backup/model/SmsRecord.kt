@@ -1,6 +1,5 @@
 package com.diffuse.backup.model
 
-
 /**
  * One SMS message from `content://sms`, mapped to the fields the SMS Backup &
  * Restore `<sms>` element expects (see docs/backup-format.md).
@@ -27,8 +26,4 @@ data class SmsRecord(
     val locked: Int,
     /** subscription / SIM id, -1 when single-SIM or unknown. */
     val subId: Int,
-) : BackupItem {
-    override val sourceId: String get() = "sms"
-    override val stableId: String get() = id.toString()
-    override val updatedAtEpochMs: Long get() = dateEpochMs
-}
+)

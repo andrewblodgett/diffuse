@@ -5,6 +5,7 @@ import com.diffuse.backup.model.MediaKind
 import com.diffuse.backup.model.MediaRecord
 import com.diffuse.backup.model.MmsAddr
 import com.diffuse.backup.model.MmsPart
+import com.diffuse.backup.model.MmsRecord
 import com.diffuse.backup.model.SmsRecord
 
 /**
@@ -42,7 +43,7 @@ object MmsMapper {
     /** GOTCHA: `mms.date` is epoch **seconds** — multiply by 1000. */
     fun mapBase(row: Row, parts: List<MmsPart>, addresses: List<MmsAddr>) =
         row.getLong("_id")?.let { id ->
-            com.diffuse.backup.model.MmsRecord(
+            MmsRecord(
                 id = id,
                 dateEpochMs = (row.getLong("date") ?: 0L) * SECONDS_TO_MS,
                 messageBox = row.getInt("msg_box") ?: 0,
@@ -59,27 +60,26 @@ object MmsMapper {
         }
 
     /**
-     * Maps a `content://mms/part` row *without* its bytes. [isTextual] decides whether
-     * this part carries inline [MmsPart.text] (`text/…` and `application/smil`) or is a
-     * binary attachment whose bytes the extractor reads separately and passes in.
+     * Maps a `content://mms/part` row. The provider keeps some payloads in the part's
+     * `text` column (AOSP's PduPersister does this for text/plain, text/html and the SMIL
+     * layout) and everything else in a file, including *textual* attachments such as
+     * vCards. So the rule is driven by the data, not the content type: use the `text`
+     * column when it has a value, otherwise call [readBytes] for the file's payload.
+     * (Deciding by content type alone used to drop every `text/x-vCard` attachment.)
      */
-    fun mapPart(row: Row, data: ByteArray?): MmsPart {
-        val ct = row.getString("ct").orEmpty()
+    fun mapPart(row: Row, readBytes: () -> ByteArray?): MmsPart {
+        val text = row.getString("text")
         return MmsPart(
             seq = row.getInt("seq") ?: 0,
-            contentType = ct,
+            contentType = row.getString("ct").orEmpty(),
             name = row.getString("name"),
             charset = row.getString("chset"),
             contentLocation = row.getString("cl"),
             contentId = row.getString("cid"),
-            text = if (isTextual(ct)) row.getString("text") else null,
-            data = if (isTextual(ct)) null else data,
+            text = text,
+            data = if (text == null) readBytes() else null,
         )
     }
-
-    /** True for parts whose payload lives in the `text` column, false for binaries. */
-    fun isTextual(contentType: String): Boolean =
-        contentType == "application/smil" || contentType.startsWith("text/")
 
     fun mapAddr(row: Row) = MmsAddr(
         address = row.getString("address"),

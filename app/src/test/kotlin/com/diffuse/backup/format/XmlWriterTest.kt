@@ -22,16 +22,39 @@ class XmlWriterTest {
         assertEquals("xy", Xml.escapeAttr(withControl))
     }
 
+    @Test fun escapeAttr_keeps_emoji_but_drops_unpaired_surrogates_and_nonchars() {
+        val emoji = "\uD83D\uDE00" // 😀 as a valid surrogate pair
+        assertEquals("a${emoji}b", Xml.escapeAttr("a${emoji}b"))
+        assertEquals("ab", Xml.escapeAttr("a\uD83Db"))   // lone high surrogate
+        assertEquals("ab", Xml.escapeAttr("a\uDE00b"))   // lone low surrogate
+        assertEquals("ab", Xml.escapeAttr("a\uFFFEb"))   // XML non-character
+    }
+
+    @Test fun vcard_part_bytes_go_in_data_attribute() {
+        val record = MmsRecord(
+            id = 1, dateEpochMs = 0, messageBox = 1, messageType = 132, contentTypeToken = null,
+            messageId = null, subject = null, read = 1, messageSize = null, subId = -1,
+            parts = listOf(MmsPart(seq = 0, contentType = "text/x-vCard", name = "c.vcf", charset = null,
+                contentLocation = null, contentId = null, text = null, data = "abc".toByteArray())),
+            addresses = emptyList(),
+        )
+        val sb = StringBuilder()
+        SmsBackupXmlWriter(backupDateMs = 0, backupSet = "set").mms(sb, record)
+        assertTrue(sb.contains("ct=\"text/x-vCard\""))
+        assertTrue(sb.contains("text=\"null\""))
+        assertTrue(sb.contains("data=\"YWJj\""))
+    }
+
     @Test fun sms_element_uses_ms_date_and_expected_attributes() {
         val sb = StringBuilder()
-        SmsBackupXmlWriter(sb, backupDateMs = 0, backupSet = "set").apply {
-            start(1)
-            writeSms(SmsRecord(
+        SmsBackupXmlWriter(backupDateMs = 0, backupSet = "set").apply {
+            header(sb, 1)
+            sms(sb, SmsRecord(
                 id = 1, address = "+15551234567", dateEpochMs = 1_609_459_200_000L,
                 dateSentEpochMs = 0, type = 1, body = "hi", subject = null, read = 1,
                 status = -1, protocol = "0", serviceCenter = null, locked = 0, subId = -1,
             ))
-            finish()
+            footer(sb)
         }
         val xml = sb.toString()
         assertTrue(xml.contains("<smses"))
@@ -59,8 +82,8 @@ class XmlWriterTest {
             addresses = listOf(MmsAddr("+15550000000", 137, "106")),
         )
         val sb = StringBuilder()
-        SmsBackupXmlWriter(sb, backupDateMs = 0, backupSet = "set").apply {
-            start(1); writeMms(record); finish()
+        SmsBackupXmlWriter(backupDateMs = 0, backupSet = "set").apply {
+            header(sb, 1); mms(sb, record); footer(sb)
         }
         val xml = sb.toString()
         assertTrue(xml.contains("date=\"1609459200\"")) // SECONDS, not ms

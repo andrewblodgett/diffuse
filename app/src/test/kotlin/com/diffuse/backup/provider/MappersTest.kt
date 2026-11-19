@@ -14,7 +14,6 @@ class MappersTest {
         val r = SmsMapper.map(FakeRow(mapOf("_id" to 5L, "date" to 1_609_459_200_000L, "type" to 1)))!!
         assertEquals(5L, r.id)
         assertEquals(1_609_459_200_000L, r.dateEpochMs) // unchanged: already ms
-        assertEquals(1_609_459_200_000L, r.updatedAtEpochMs)
     }
 
     @Test fun sms_missing_id_maps_to_null() {
@@ -32,24 +31,29 @@ class MappersTest {
         assertEquals(1, r.messageBox)
     }
 
-    @Test fun mms_part_classification_text_vs_binary() {
-        assertTrue(MmsMapper.isTextual("text/plain"))
-        assertTrue(MmsMapper.isTextual("application/smil"))
-        assertFalse(MmsMapper.isTextual("image/jpeg"))
-
-        val textPart = MmsMapper.mapPart(
-            FakeRow(mapOf("seq" to 0, "ct" to "text/plain", "text" to "hello")),
-            data = byteArrayOf(1, 2, 3), // should be ignored for a text part
-        )
+    @Test fun mms_part_uses_text_column_when_present_and_skips_reading_bytes() {
+        var bytesRead = false
+        val textPart = MmsMapper.mapPart(FakeRow(mapOf("seq" to 0, "ct" to "text/plain", "text" to "hello"))) {
+            bytesRead = true; byteArrayOf(1)
+        }
         assertEquals("hello", textPart.text)
         assertNull(textPart.data)
+        assertFalse(bytesRead)
+    }
 
-        val binaryPart = MmsMapper.mapPart(
-            FakeRow(mapOf("seq" to 1, "ct" to "image/jpeg", "text" to "ignored")),
-            data = byteArrayOf(1, 2, 3),
-        )
+    @Test fun mms_binary_part_reads_bytes() {
+        val binaryPart = MmsMapper.mapPart(FakeRow(mapOf("seq" to 1, "ct" to "image/jpeg"))) { byteArrayOf(1, 2, 3) }
         assertNull(binaryPart.text)
         assertEquals(3, binaryPart.data!!.size)
+    }
+
+    @Test fun mms_vcard_part_is_read_from_its_file_not_dropped() {
+        // AOSP stores text/x-vCard in a file, leaving the text column null. Deciding by the
+        // "text/" prefix used to emit text="null" and lose the attachment entirely.
+        val vcard = "BEGIN:VCARD\nEND:VCARD".toByteArray()
+        val part = MmsMapper.mapPart(FakeRow(mapOf("seq" to 2, "ct" to "text/x-vCard"))) { vcard }
+        assertNull(part.text)
+        assertTrue(vcard.contentEquals(part.data))
     }
 
     @Test fun call_date_is_milliseconds_and_duration_seconds() {
@@ -77,7 +81,7 @@ class MappersTest {
         assertEquals(1_609_459_200_000L, r.dateAddedEpochMs)   // *1000
         assertEquals(1_609_459_260_000L, r.dateModifiedEpochMs) // *1000
         assertEquals(42L, r.generationModified)
-        assertEquals("images", r.sourceId)
+        assertEquals("images:1", r.stableId)
     }
 
     @Test fun media_datetaken_zero_becomes_null() {
@@ -87,6 +91,6 @@ class MappersTest {
             contentUri = "u",
         )!!
         assertNull(r.dateTakenEpochMs)
-        assertEquals(5_000L, r.updatedAtEpochMs) // falls back to date_modified
+        assertEquals(5_000L, r.dateModifiedEpochMs)
     }
 }

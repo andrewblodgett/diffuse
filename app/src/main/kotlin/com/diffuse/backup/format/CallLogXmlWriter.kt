@@ -3,15 +3,16 @@ package com.diffuse.backup.format
 import com.diffuse.backup.model.CallRecord
 
 /**
- * Streams a SMS Backup & Restore `calls-*.xml` document (`<calls>` root of `<call>`
+ * Writes a SMS Backup & Restore `calls-*.xml` document (`<calls>` root of `<call>`
  * elements). `call.date` is epoch **ms** (provider-native), `duration` is seconds.
+ * Stateless apart from the run's header values, so the header, records and footer can
+ * go to different [Appendable]s (see [ArchiveDocumentBuilder]).
  */
 class CallLogXmlWriter(
-    private val out: Appendable,
     private val backupDateMs: Long,
     private val backupSet: String,
 ) {
-    fun start(count: Int) {
+    fun header(out: Appendable, count: Int) {
         out.append(Xml.DECLARATION).append('\n')
         out.append("<?xml-stylesheet type=\"text/xsl\" href=\"calls.xsl\"?>").append('\n')
         val header = StringBuilder("<calls")
@@ -23,7 +24,7 @@ class CallLogXmlWriter(
         out.append(header).append('\n')
     }
 
-    fun writeCall(r: CallRecord) {
+    fun call(out: Appendable, r: CallRecord) {
         val sb = StringBuilder("  <call")
             .attr("number", r.number)
             .attr("duration", r.durationSec)
@@ -37,7 +38,7 @@ class CallLogXmlWriter(
         out.append(sb).append('\n')
     }
 
-    fun finish() {
+    fun footer(out: Appendable) {
         out.append("</calls>").append('\n')
     }
 }

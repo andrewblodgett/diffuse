@@ -1,6 +1,5 @@
 package com.diffuse.backup.model
 
-
 /**
  * One MMS message from `content://mms`, assembled from the three-table join the
  * provider requires: the base row, its `content://mms/part` rows, and its
@@ -29,17 +28,15 @@ data class MmsRecord(
     val subId: Int,
     val parts: List<MmsPart>,
     val addresses: List<MmsAddr>,
-) : BackupItem {
-    override val sourceId: String get() = "mms"
-    override val stableId: String get() = id.toString()
-    override val updatedAtEpochMs: Long get() = dateEpochMs
-}
+)
 
 /**
- * One `content://mms/part` row. Exactly one of [text] / [data] is populated:
- * text for `text/…` and `application/smil` parts, raw bytes for binary attachments
- * (the writer base64-encodes [data] into the `data` attribute). The SMIL layout
- * part is *kept*, not discarded — restore-compatibility needs it.
+ * One `content://mms/part` row. At most one of [text] / [data] is populated: [text]
+ * when the provider stored the payload in the part's `text` column (plain text, HTML
+ * and the SMIL layout), otherwise the raw bytes of the part's file, which the writer
+ * base64-encodes into the `data` attribute. That second case covers images and video
+ * but also textual attachments such as vCards (`text/x-vCard`), which AOSP stores as
+ * files. The SMIL layout part is *kept*, not discarded, because restore needs it.
  */
 data class MmsPart(
     val seq: Int,

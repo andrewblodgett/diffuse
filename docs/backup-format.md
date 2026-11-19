@@ -1,28 +1,38 @@
-# Diffuse backup format (Phase 2)
+# Diffuse backup format
 
-Diffuse extracts on-device data into an **SMS Backup & Restore-compatible** archive on
-local storage. This is the "standard format" the whole pipeline targets; Phase 3 uploads
-the archive directory to Google Drive unchanged. Choosing the SyncTech format means the
-messages/calls can be restored onto a normal Android phone, not just archived.
+Diffuse exports on-device data into an **SMS Backup & Restore-compatible** archive and
+uploads it to a `Diffuse` folder in the user's Google Drive. Choosing the SyncTech format
+means the messages/calls can be restored onto a normal Android phone, not just archived.
 
 ## Layout
 
 ```
-<outputDir>/
-  calls-<yyyyMMddHHmmss>.xml    # <calls> root: <call>
-  sms-<yyyyMMddHHmmss>.xml      # <smses> root: <sms> + <mms> (attachments inline base64)
-  photos-<yyyyMMddHHmmss>.xml   # <medias> index for images (Diffuse's own; not SyncTech)
-  videos-<yyyyMMddHHmmss>.xml   # <medias> index for video, same shape
+Diffuse/
+  calls-2026-11.xml     # <calls> root: <call>
+  sms-2026-11.xml       # <smses> root: <sms> + <mms> (attachments inline base64)
+  photos-2026-11.xml    # <medias> index for images (Diffuse's own; not SyncTech)
+  videos-2026-11.xml    # <medias> index for video, same shape
+  calls-2026-10.xml     # last month's snapshots, frozen
+  ...
+  media/DCIM/Camera/IMG_0001.jpg    # originals, mirroring each item's RELATIVE_PATH
 ```
 
-Each document uploads to Drive the moment it's written — in this fixed order (call log,
-messages, photos, videos) — rather than as a batch sweep afterward, so the order things
-actually appear in Drive matches the order the backup UI announces.
+**Monthly snapshots.** Every run exports each enabled source in full and writes it to the
+*current month's* document (named from the phone's local date when the run starts). A later
+run in the same month overwrites that document in place (same Drive file id); once the month
+is over its documents are never modified again. Deleting something on the phone therefore
+only removes it from the current month's snapshot. A source with no rows produces no
+document, so an empty export can never replace a useful one.
 
-Photos and videos are **not** part of the SMS Backup & Restore schema — a JPEG/MP4 is
-already a standard format — so their bytes stream straight to Drive (see
-`DriveMediaSink`) and are described by the `photos-*.xml`/`videos-*.xml` index rather than
-folded into XML.
+Each document uploads the moment it's written, in this fixed order (call log, messages,
+photos, videos), so the order things appear in Drive matches what the backup UI announces.
+
+Photos and videos are **not** part of the SMS Backup & Restore schema (a JPEG/MP4 is
+already a standard format), so their bytes stream straight to Drive (see `DriveMediaSink`)
+and are described by the `photos-*.xml`/`videos-*.xml` index rather than folded into XML.
+
+Every document's root `count` attribute is the number of records actually written, counted
+while writing (not queried beforehand, since the provider can change mid-run).
 
 ## `sms-*.xml` (`<smses>`)
 
@@ -39,9 +49,11 @@ folded into XML.
     straight into its provider column, and the MMS column is seconds.
   - `msg_box`: 1=received, 2=sent, 3=draft, 4=outbox. `m_type`: 128=send-req (sent),
     132=retrieve-conf (received), …
-  - `<part seq ct name chset cd fn cid cl ctt_s ctt_t text data>` — text/SMIL parts carry
-    `text`; binary attachments carry base64 bytes in **`data`**. The SMIL layout part is
-    **kept**, not discarded (restore needs it).
+  - `<part seq ct name chset cd fn cid cl ctt_s ctt_t text data>`. A part whose payload the
+    provider keeps in its `text` column (plain text, HTML, the SMIL layout) carries `text`;
+    every other part carries its file's bytes, base64-encoded, in **`data`**. That includes
+    textual attachments such as vCards (`text/x-vCard`), which AOSP stores as files. The SMIL
+    layout part is **kept**, not discarded (restore needs it).
   - `<addr address type charset>` — `type`: 129=BCC, 130=CC, 137=From, 151=To.
 
 ## `calls-*.xml` (`<calls>`)
@@ -53,9 +65,11 @@ folded into XML.
 ## `photos-*.xml` / `videos-*.xml` (`<medias>`, Diffuse-specific)
 
 `<media kind id display_name relative_path mime_type size date_taken date_added
-date_modified generation_modified backup_path>`. All timestamps are epoch **ms** in the
-index (normalised from the provider's mixed units). `backup_path` is where the bytes
-landed on Drive under `media/`. Split into two documents (one all `kind="images"`, one all
+date_modified generation_modified backup_path drive_file_id>`. All timestamps are epoch
+**ms** in the index (normalised from the provider's mixed units). `backup_path` is where the
+bytes are in the archive under `media/` (including any ` (edited …)`/` (id)` suffix), and
+`drive_file_id` is the exact Drive file. Items that failed to upload during a run are left
+out of that run's index and retried by the next run. Split into two documents (one all `kind="images"`, one all
 `kind="video"`) so each streams and reports progress independently.
 
 ## Notes / provenance
@@ -67,17 +81,44 @@ landed on Drive under `media/`. Split into two documents (one all `kind="images"
   [phase0-findings.md](phase0-findings.md). Reference for the field set:
   <https://www.synctech.com.au/sms-backup-restore/fields-in-xml-backup-files/>.
 
-## Incremental backups
+## How Diffuse knows what's already on Drive
 
-Each source persists a change **token** (`FilePropertiesTokenStore`) in each provider's
-**native column units** — SMS/call `date` (ms), MMS `date` (seconds), MediaStore
-`generation_modified`. A run selects `column > token`; ms conversions happen only when
-building records, never in the WHERE clause, so units can't drift. Tokens are captured
-before extraction and persisted after a successful write, so the failure mode is a
-re-backed-up boundary item (harmless), never a lost one.
+Drive is the source of truth; nothing is tracked in a local database. Every file Diffuse
+uploads carries two private Drive `appProperties`:
+
+| Property | Media file | Document |
+| --- | --- | --- |
+| `diffuseKey` | `media:<kind>:<MediaStore _id>`, e.g. `media:images:123` | `doc:<file name>`, e.g. `doc:sms-2026-11.xml` |
+| `diffuseVersion` | the file's byte length | SHA-256 of the document's record section |
+
+Each run lists the app's files on Drive (under `drive.file` that is exactly the files
+Diffuse created) and keys them by `diffuseKey`; when several share a key, the newest wins.
+Then for each item:
+
+- **Media**, same key and version → already backed up; the bytes aren't even read.
+  Same key, different length (edited, or first caught while still being written) → the new
+  version is uploaded *next to* the old one as `name (edited YYYY-MM-DD).ext`; nothing is
+  ever overwritten. A different item whose name is already taken gets its MediaStore id
+  appended: `name (123).ext`.
+- **Documents**, same fingerprint → skipped (no daily re-upload of an unchanged archive).
+  Different fingerprint → the file's content is replaced, keeping its id. The fingerprint
+  covers only the records, not the header, whose `backup_date`/`backup_set` change on every
+  run.
+
+Consequences: files deleted from Drive are uploaded again on the next run, and a reinstall
+or a new phone recognises everything already on Drive. A short local journal of the last
+day's uploads covers the moments when a brand-new file doesn't show in Drive's listing yet.
+
+Files uploaded by Diffuse 0.1.x have no tags; on the first run after upgrading they are
+matched through 0.1.x's local `upload-manifest.properties` and tagged in place, then that
+file is deleted.
+
+Lengths come from the file descriptor, never MediaStore's `_size`, which reads 0 for fresh
+captures on the Light Phone III.
 
 ## Read-only guarantee
 
 Extraction opens provider cursors and, for MMS attachments and media, read-only input
-streams — nothing else. The only writes are files under `<outputDir>` (our own sandbox),
-which is not a provider mutation. `scripts/check-readonly.sh` enforces this statically.
+streams — nothing else. The only local writes are the documents being assembled in the
+app's private `files/backup/` directory (deleted after upload), which is not a provider
+mutation. `scripts/check-readonly.sh` enforces this statically.

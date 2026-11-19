@@ -1,10 +1,8 @@
 package com.diffuse.ui
 
-import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,7 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -31,7 +29,11 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.diffuse.BackupPermissions
 import com.diffuse.backup.store.LastRun
+import com.diffuse.describe
+import com.diffuse.work.BackupSettings
 import com.thelightphone.sdk.ui.LightText
 import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightThemeTokens
@@ -39,50 +41,52 @@ import com.thelightphone.sdk.ui.lightClickable
 import kotlin.math.cos
 import kotlin.math.sin
 
-/** Runtime read permissions the backup needs. Requested on demand before a backup run. */
-private val REQUIRED_PERMISSIONS = buildList {
-    add(Manifest.permission.READ_SMS)
-    add(Manifest.permission.READ_CALL_LOG)
-    add(Manifest.permission.READ_MEDIA_IMAGES)
-    add(Manifest.permission.READ_MEDIA_VIDEO)
-    add(Manifest.permission.ACCESS_MEDIA_LOCATION)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(Manifest.permission.POST_NOTIFICATIONS)
-}.toTypedArray()
-
 /**
- * Home screen: **Connect Drive** (QR device-flow sign-in) and **Back up now** (extract → stream
- * media to Drive → upload index), plus live progress, last-run status, and a gear that opens
- * Settings. Driven by [BackupController]; styling reuses the vendored Light theme.
+ * Home screen: **Connect Drive** (QR device-flow sign-in) and **Back up now**, plus live
+ * progress (whether the run was started here or by the schedule), last-run status, and a
+ * gear that opens Settings. State comes from [BackupViewModel]; styling reuses the vendored
+ * Light theme.
  */
 @Composable
-fun HomeScreen(controller: BackupController, onOpenSettings: () -> Unit, onConnect: () -> Unit) {
+fun HomeScreen(vm: BackupViewModel, onOpenSettings: () -> Unit, onConnect: () -> Unit) {
     val colors = LightThemeTokens.colors
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+    val connected by vm.connected.collectAsStateWithLifecycle()
+    val progress by vm.progress.collectAsStateWithLifecycle()
+    val queuedRun by vm.queuedRun.collectAsStateWithLifecycle()
+    val lastRun by vm.lastRun.collectAsStateWithLifecycle()
+    val busy = progress != null || queuedRun != null
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) { grants ->
-        // Notifications are optional; the data reads are what a backup actually needs.
-        val dataGranted = grants.filterKeys { it != Manifest.permission.POST_NOTIFICATIONS }.values.all { it }
-        if (dataGranted) {
-            controller.backupNow(scope)
+    ) { _ ->
+        // Back up whatever is allowed; the run's summary names anything skipped.
+        val selected = BackupSettings(context).prefsValue.content
+        if (!(selected intersect BackupPermissions.permitted(context)).isEmpty) {
+            vm.backUpNow()
+            return@rememberLauncherForActivityResult
+        }
+        vm.showHomeMessage("Diffuse needs permission to read your data to back it up.")
+        val activity = context as? Activity
+        val canAskAgain = activity != null &&
+            BackupPermissions.toRequest(selected).any { activity.shouldShowRequestPermissionRationale(it) }
+        if (!canAskAgain) {
+            // Permanently denied → the only way to grant is App Settings.
+            context.startActivity(
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", context.packageName, null),
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
+    }
+
+    fun onBackUpNow() {
+        val selected = BackupSettings(context).prefsValue.content
+        if (selected.isEmpty) {
+            vm.showHomeMessage("Nothing is selected. Turn on photos, videos or messages in Settings.")
         } else {
-            val activity = context as? Activity
-            val canAskAgain = activity != null && REQUIRED_PERMISSIONS.any {
-                it != Manifest.permission.POST_NOTIFICATIONS &&
-                    activity.shouldShowRequestPermissionRationale(it)
-            }
-            controller.onPermissionsDenied()
-            if (!canAskAgain) {
-                // Permanently denied → the only way to grant is App Settings.
-                context.startActivity(
-                    Intent(
-                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                        Uri.fromParts("package", context.packageName, null),
-                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
-            }
+            permissionLauncher.launch(BackupPermissions.toRequest(selected))
         }
     }
 
@@ -104,50 +108,34 @@ fun HomeScreen(controller: BackupController, onOpenSettings: () -> Unit, onConne
                 align = TextAlign.Center,
             )
 
-            if (!controller.connected) {
-                LightButton(text = "Connect Drive", onClick = onConnect)
-            } else {
-                LightButton(text = "Back up now") { permissionLauncher.launch(REQUIRED_PERMISSIONS) }
+            when {
+                !connected -> LightButton(text = "Connect Drive", onClick = onConnect)
+                !busy -> LightButton(text = "Back up now", onClick = ::onBackUpNow)
             }
 
-            // --- Live progress during a run --------------------------------------
-            if (controller.phase == Phase.BackingUp) {
-                controller.stageText?.let {
-                    LightText(text = it, variant = Body, align = TextAlign.Center)
+            // --- Live state of a run ---------------------------------------------------------
+            val running = progress
+            when {
+                running != null -> {
+                    val line = running.describe()
+                    LightText(text = line.text, variant = Body, align = TextAlign.Center)
+                    if (line.total > 0) ProgressBar(line.done.toFloat() / line.total)
                 }
-                if (controller.photoTotal > 0) {
-                    LightText(
-                        text = "${controller.photoDone} / ${controller.photoTotal} photos",
-                        variant = Body,
-                        align = TextAlign.Center,
-                    )
-                    ProgressBar(controller.photoDone.toFloat() / controller.photoTotal)
-                }
-                if (controller.videoTotal > 0) {
-                    LightText(
-                        text = "${controller.videoDone} / ${controller.videoTotal} videos",
-                        variant = Body,
-                        align = TextAlign.Center,
-                    )
-                    ProgressBar(controller.videoDone.toFloat() / controller.videoTotal)
-                }
+                queuedRun == QueuedRun.WaitingForNetwork ->
+                    LightText(text = "Waiting for a network connection…", variant = Body, align = TextAlign.Center)
+                queuedRun == QueuedRun.RetryingSoon ->
+                    LightText(text = "Backup interrupted. Retrying shortly…", variant = Body, align = TextAlign.Center)
             }
 
-            controller.message?.let {
+            vm.homeMessage?.let {
                 LightText(text = it, variant = Body, align = TextAlign.Center)
             }
 
-            // --- Last run, when idle ---------------------------------------------
-            if (controller.phase != Phase.BackingUp && controller.phase != Phase.Connecting) {
-                controller.lastRun?.let { LastRunLine(it) }
-            }
+            if (!busy) lastRun?.let { LastRunLine(it) }
         }
 
-        // Settings gear, anchored to the bottom — only once Drive is connected and we're idle.
-        if (controller.connected &&
-            controller.phase != Phase.BackingUp &&
-            controller.phase != Phase.Connecting
-        ) {
+        // Settings gear, anchored to the bottom, once Drive is connected.
+        if (connected) {
             GearIcon(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -162,9 +150,12 @@ fun HomeScreen(controller: BackupController, onOpenSettings: () -> Unit, onConne
 
 @Composable
 private fun LastRunLine(run: LastRun) {
-    val when_ = relativeTime(run.timestampMs)
-    val text = if (run.success) "Last backed up $when_ — ${run.summary}"
-    else "Last backup ($when_) failed: ${run.summary}"
+    val ago = relativeTime(run.timestampMs)
+    val text = when {
+        !run.success -> "Last backup ($ago) failed: ${run.summary}"
+        run.failedItems > 0 -> "Last backed up $ago, with problems: ${run.summary}"
+        else -> "Last backed up $ago: ${run.summary}"
+    }
     LightText(text = text, variant = Body, align = TextAlign.Center)
 }
 

@@ -79,6 +79,17 @@ android {
         buildConfig = true
     }
 
+    lint {
+        // Diffuse intentionally doesn't support Android 14's partial "selected photos" access;
+        // see the comment on READ_MEDIA_IMAGES in AndroidManifest.xml.
+        disable += "SelectedPhotoAccess"
+    }
+
+    testOptions {
+        // android.util.Log calls in production code return defaults in JVM unit tests.
+        unitTests.isReturnDefaultValues = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -105,6 +116,8 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.kotlinx.coroutines.android)
 
     // Phase 3 — Google Drive upload
@@ -118,4 +131,5 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
 }

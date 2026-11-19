@@ -1,86 +1,71 @@
 package com.diffuse.drive
 
-import com.diffuse.drive.store.UploadManifest
+import com.diffuse.backup.DocumentUpload
+import com.diffuse.backup.format.ArchiveDocument
+import com.diffuse.drive.store.RecentUploads
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
-import java.io.InputStream
 
 class DriveFileSinkTest {
     @get:Rule val tmp = TemporaryFolder()
 
-    /** Records folder creation, creates (upload), and overwrites (update); returns synthetic ids. */
-    private class FakeDrive : DriveApi {
-        val folders = mutableListOf<String>()   // "name@parent"
-        val uploads = mutableListOf<String>()    // "name@parentId"
-        val updates = mutableListOf<String>()    // fileId overwritten
-        private var seq = 0
-        private val folderIds = HashMap<String, String>()
-        override fun ensureFolder(name: String, parentId: String?): String =
-            folderIds.getOrPut("$parentId/$name") { folders.add("$name@$parentId"); "folder${seq++}" }
-        override fun upload(name: String, parentId: String, mimeType: String, file: File): String {
-            uploads.add("$name@$parentId"); return "file${seq++}"
-        }
-        override fun update(fileId: String, mimeType: String, file: File) { updates.add(fileId) }
-        override fun upload(name: String, parentId: String, mimeType: String, length: Long, open: () -> InputStream): String =
-            error("file sink must use the File-based upload overload")
+    private val drive = FakeDrive()
+
+    private fun sink() = DriveFileSink(
+        drive,
+        DriveFolderTree(drive, "ROOT"),
+        DriveInventory.load(drive, RecentUploads(File(tmp.root, "recent.tsv")), emptyMap()),
+    )
+
+    private fun doc(name: String, fingerprint: String) = ArchiveDocument(
+        file = File(tmp.root, name).apply { writeText("<doc/>") },
+        name = name,
+        recordCount = 1,
+        fingerprint = fingerprint,
+    )
+
+    @Test fun creates_a_new_document_at_the_root_tagged_with_its_fingerprint() {
+        assertEquals(DocumentUpload.Created, sink().put(doc("sms-2026-11.xml", "f1")))
+        assertTrue(drive.created.single().startsWith("sms-2026-11.xml@ROOT"))
+        val tags = drive.files.single().appProperties
+        assertEquals("doc:sms-2026-11.xml", tags[DriveInventory.KEY_PROPERTY])
+        assertEquals("f1", tags[DriveInventory.VERSION_PROPERTY])
+        assertTrue("a top-level doc never creates a subfolder", drive.folders.isEmpty())
     }
 
-    private fun archiveFile(name: String) = File(tmp.root, name).apply { writeText("<doc/>") }
-
-    @Test fun creates_at_root_and_records_manifest_when_new() {
-        val drive = FakeDrive()
-        val manifest = UploadManifest(File(tmp.root, "manifest.properties"))
-        val sink = DriveFileSink(drive, DriveFolderTree(drive, "ROOT"), manifest)
-
-        sink.put(archiveFile("calls.xml"), "calls.xml")
-
-        assertEquals(1, sink.uploaded)
-        assertEquals(0, sink.updated)
-        assertTrue(drive.uploads.any { it.startsWith("calls.xml@ROOT") })
-        assertTrue(manifest.contains("calls.xml"))
-        // A top-level doc never creates a subfolder.
-        assertTrue(drive.folders.isEmpty())
+    @Test fun unchanged_content_is_not_uploaded_again() {
+        sink().put(doc("sms-2026-11.xml", "f1"))
+        assertEquals(DocumentUpload.Unchanged, sink().put(doc("sms-2026-11.xml", "f1")))
+        assertEquals(1, drive.created.size)
+        assertTrue(drive.contentUpdates.isEmpty())
     }
 
-    @Test fun overwrites_in_place_when_manifest_already_has_it() {
-        val drive = FakeDrive()
-        val manifest = UploadManifest(File(tmp.root, "manifest.properties")).apply {
-            record("sms.xml", "existingId")
-        }
-        val sink = DriveFileSink(drive, DriveFolderTree(drive, "ROOT"), manifest)
+    @Test fun changed_content_overwrites_the_same_file() {
+        sink().put(doc("sms-2026-11.xml", "f1"))
+        val id = drive.files.single().id
 
-        sink.put(archiveFile("sms.xml"), "sms.xml")
-
-        assertEquals(0, sink.uploaded)
-        assertEquals(1, sink.updated)
-        // Overwrites the existing file id; never creates a second copy.
-        assertEquals(listOf("existingId"), drive.updates)
-        assertTrue(drive.uploads.isEmpty())
+        assertEquals(DocumentUpload.Updated, sink().put(doc("sms-2026-11.xml", "f2")))
+        assertEquals(listOf(id), drive.contentUpdates)
+        assertEquals("f2", drive.files.single().appProperties[DriveInventory.VERSION_PROPERTY])
     }
 
-    @Test fun second_run_overwrites_the_same_drive_file() {
-        val manifestFile = File(tmp.root, "manifest.properties")
-        val file = archiveFile("photos.xml")
+    @Test fun a_new_month_starts_a_new_file_and_leaves_the_old_one_alone() {
+        sink().put(doc("sms-2026-10.xml", "f1"))
+        assertEquals(DocumentUpload.Created, sink().put(doc("sms-2026-11.xml", "f2")))
+        assertEquals(2, drive.files.size)
+        assertTrue(drive.contentUpdates.isEmpty())
+    }
 
-        val drive1 = FakeDrive()
-        val first = DriveFileSink(drive1, DriveFolderTree(drive1, "ROOT"), UploadManifest(manifestFile))
-        first.put(file, "photos.xml")
-        assertEquals(1, first.uploaded)
-        val createdId = drive1.uploads // one create happened
+    @Test fun a_document_deleted_since_the_listing_is_recreated() {
+        drive.files += DriveFile("GONE", "calls-2026-11.xml", DriveInventory.tags("doc:calls-2026-11.xml", "old"))
+        val stale = sink() // its listing still shows GONE
+        drive.files.clear() // deleted between the listing and the upload
 
-        // Fresh manifest instance reads the persisted state → overwrites in place, no new create.
-        val drive2 = FakeDrive()
-        val second = DriveFileSink(drive2, DriveFolderTree(drive2, "ROOT"), UploadManifest(manifestFile))
-        second.put(file, "photos.xml")
-
-        assertEquals(0, second.uploaded)
-        assertEquals(1, second.updated)
-        assertTrue(drive2.uploads.isEmpty())
-        assertEquals(1, drive2.updates.size)
-        assertTrue(createdId.isNotEmpty())
+        assertEquals(DocumentUpload.Created, stale.put(doc("calls-2026-11.xml", "new")))
+        assertEquals(1, drive.files.size)
     }
 }

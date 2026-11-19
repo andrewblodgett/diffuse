@@ -41,4 +41,26 @@ class LastRunStoreTest {
         store.put(LastRun(2, false, "second"))
         assertEquals("second", LastRunStore(file).get()!!.summary)
     }
+
+    @Test fun round_trips_failed_item_count_and_reads_old_files_as_zero() {
+        val file = File(tmp.root, "last.properties")
+        LastRunStore(file).put(LastRun(1, success = true, summary = "s", failedItems = 3))
+        assertEquals(3, LastRunStore(file).get()!!.failedItems)
+
+        // A file written by 0.1.x has no failed-items key.
+        file.writeText("last.timestamp=5\nlast.success=true\nlast.summary=old\n")
+        assertEquals(0, LastRunStore(file).get()!!.failedItems)
+    }
+
+    @Test fun unreadable_file_reads_as_no_record() {
+        val file = File(tmp.root, "last.properties")
+        file.writeText("last.timestamp=\\u12") // malformed \u escape makes Properties.load throw
+        assertNull(LastRunStore(file).get())
+    }
+
+    @Test fun write_leaves_no_temp_file_behind() {
+        val file = File(tmp.root, "last.properties")
+        LastRunStore(file).put(LastRun(1, true, "s"))
+        assertEquals(listOf("last.properties"), tmp.root.list()!!.toList())
+    }
 }

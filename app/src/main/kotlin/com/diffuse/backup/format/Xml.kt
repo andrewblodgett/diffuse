@@ -14,23 +14,34 @@ object Xml {
     /**
      * Escapes a value for use inside a double-quoted XML attribute. The five XML
      * entities are escaped; tab/newline/carriage-return are numeric-encoded so
-     * parsers preserve them instead of normalising to spaces; other C0 control
-     * characters (illegal in XML 1.0, even as numeric refs) are dropped.
+     * parsers preserve them instead of normalising to spaces. Characters XML 1.0
+     * forbids outright are dropped: other C0 controls, U+FFFE/U+FFFF, and unpaired
+     * UTF-16 surrogates (a malformed message body would otherwise make the whole
+     * document unparseable for a restore tool).
      */
     fun escapeAttr(value: String): String {
         val sb = StringBuilder(value.length + 16)
-        for (ch in value) {
-            when (ch) {
-                '&' -> sb.append("&amp;")
-                '<' -> sb.append("&lt;")
-                '>' -> sb.append("&gt;")
-                '"' -> sb.append("&quot;")
-                '\'' -> sb.append("&apos;")
-                '\n' -> sb.append("&#10;")
-                '\r' -> sb.append("&#13;")
-                '\t' -> sb.append("&#9;")
-                else -> if (ch.code >= 0x20) sb.append(ch) // drop other control chars
+        var i = 0
+        while (i < value.length) {
+            val ch = value[i]
+            when {
+                ch == '&' -> sb.append("&amp;")
+                ch == '<' -> sb.append("&lt;")
+                ch == '>' -> sb.append("&gt;")
+                ch == '"' -> sb.append("&quot;")
+                ch == '\'' -> sb.append("&apos;")
+                ch == '\n' -> sb.append("&#10;")
+                ch == '\r' -> sb.append("&#13;")
+                ch == '\t' -> sb.append("&#9;")
+                ch.code < 0x20 || ch == '\uFFFE' || ch == '\uFFFF' -> Unit // illegal: drop
+                ch.isHighSurrogate() && i + 1 < value.length && value[i + 1].isLowSurrogate() -> {
+                    sb.append(ch).append(value[i + 1]) // a valid pair (e.g. an emoji)
+                    i++
+                }
+                ch.isSurrogate() -> Unit // unpaired surrogate: drop
+                else -> sb.append(ch)
             }
+            i++
         }
         return sb.toString()
     }

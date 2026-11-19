@@ -1,25 +1,24 @@
 package com.diffuse.backup
 
-import java.io.File
+import com.diffuse.backup.format.ArchiveDocument
 
 /**
- * Where a completed archive document (e.g. `calls-<ts>.xml`) goes once [BackupRunner] finishes
- * writing it. Mirrors [MediaSink]'s role for media originals: it lets the runner upload each
- * document the moment it's ready — right after announcing that stage — instead of a single
- * batch sweep at the end that uploads everything in whatever order files happen to sort in.
- * That mismatch was a real bug: the progress UI said "backing up messages" while the batch
- * sweep was actually uploading calls/media/sms alphabetically, sms last.
+ * Where a finished archive document goes. [BackupRunner] hands each one over the moment it's
+ * written, so documents upload in the same order the progress UI announces them.
  *
- * READ-ONLY: implementations only read [file] (already fully written to our own sandbox) and
- * upload its bytes; they never touch a content provider.
+ * READ-ONLY: implementations only read the already-written local file and upload its bytes;
+ * they never touch a content provider.
  */
 fun interface FileSink {
 
-    /** Upload [file], which the runner will refer to by archive-relative [backupPath]. */
-    fun put(file: File, backupPath: String)
+    /** Upload [document] (or recognise that the destination already has this content). */
+    fun put(document: ArchiveDocument): DocumentUpload
 
     companion object {
-        /** A sink that does nothing — used when only the local file matters (tests). */
-        val NONE = FileSink { _, _ -> }
+        /** A sink that keeps nothing (tests that only care about the local file). */
+        val NONE = FileSink { DocumentUpload.Unchanged }
     }
 }
+
+/** What a [FileSink] did with one document. */
+enum class DocumentUpload { Created, Updated, Unchanged }

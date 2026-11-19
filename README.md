@@ -1,7 +1,7 @@
 # Diffuse
 
 **One-way, read-only backup for the Light Phone III.** Diffuse is a sideloaded
-Android app that incrementally backs up your **SMS/MMS, call log, photos, and
+Android app that backs up your **SMS/MMS, call log, photos, and
 videos** to *your own* Google Drive — and never writes a single byte back to the
 phone.
 
@@ -28,8 +28,14 @@ servers. Diffuse takes the opposite approach:
 - **Your Drive, least privilege.** Uploads use the `drive.file` scope only,
   which means Diffuse can see *only the files it creates* — never the rest of
   your Drive.
-- **Incremental.** After the first run it uploads just what's new, and skips
-  anything already on Drive.
+- **Uploads only what changed.** After the first run, photos and videos already
+  on Drive are skipped, and a message or call archive whose contents haven't
+  changed isn't uploaded again.
+- **Keeps history.** Messages and calls are saved as **monthly snapshots**, so
+  deleting something on the phone never removes it from earlier months' backups.
+- **Hands-off.** Backups run in the background, survive leaving the app,
+  resume interrupted uploads where they stopped, and retry on their own after
+  network trouble. You only hear from Diffuse when something needs you.
 - **Restore-friendly format.** Messages and calls are written as
   [SMS Backup & Restore](https://synctech.com.au/sms-backup-restore/)–compatible
   XML, so you can restore them onto a normal Android phone with an existing tool.
@@ -38,19 +44,28 @@ servers. Diffuse takes the opposite approach:
 
 ## What it backs up
 
-| Content        | Source                                   | On Drive                        |
-| -------------- | ---------------------------------------- | ------------------------------- |
-| SMS / MMS      | Standard telephony provider              | `sms-<timestamp>.xml`           |
-| Call log       | Call log provider                        | `calls-<timestamp>.xml`         |
-| Photos         | MediaStore (images)                      | `photos-<timestamp>.xml` + files |
-| Videos         | MediaStore (video)                       | `videos-<timestamp>.xml` + files |
+| Content        | Source                                   | On Drive                              |
+| -------------- | ---------------------------------------- | ------------------------------------- |
+| SMS / MMS      | Standard telephony provider              | `sms-<year>-<month>.xml`              |
+| Call log       | Call log provider                        | `calls-<year>-<month>.xml`            |
+| Photos         | MediaStore (images)                      | `photos-<year>-<month>.xml` + files   |
+| Videos         | MediaStore (video)                       | `videos-<year>-<month>.xml` + files   |
+
+Each run writes a complete export into the **current month's** files (for
+example `sms-2026-11.xml`), replacing that month's earlier version. When the
+month ends, its files are never touched again. So if a thread is deleted on the
+phone, it disappears only from the current month's snapshot; every earlier
+month still has it.
 
 Media files are **streamed** directly from the phone to Drive (no local staging
-copy). Runs happen in a fixed, predictable order: **call log → SMS/MMS → photos
-→ videos.**
+copy) under `media/`, mirroring the phone's folders, with their location
+metadata intact. A photo is never overwritten: if an already-backed-up photo is
+edited, the new version is saved next to the original as
+`name (edited <date>).jpg`.
 
-You can turn any of these categories off in Settings; re-enabling later loses
-nothing (Diffuse tracks each category's progress independently).
+Runs happen in a fixed, predictable order: **call log → SMS/MMS → photos →
+videos.** You can turn any of these categories off in Settings; turning one back
+on picks up everything, including what was created while it was off.
 
 ---
 
@@ -61,11 +76,20 @@ nothing (Diffuse tracks each category's progress independently).
    OAuth 2.0 Device Authorization flow (RFC 8628) — the same "sign in on a TV"
    flow — and stores an encrypted refresh token, so you only do this once.
 2. **Back up.** Tap *Back up now*, or let the scheduled job run. Diffuse reads
-   the on-device data, writes the XML index docs, and streams everything to a
-   `Diffuse` folder in your Drive with live progress.
-3. **Stays in sync.** Before each run Diffuse reconciles against Drive: if you
-   deleted backups on Drive, it notices and re-uploads them rather than assuming
-   they're still there.
+   the on-device data, writes the XML documents, and streams everything to a
+   `Diffuse` folder in your Drive with live progress. A manual backup keeps going
+   if you leave the app, and waits for a connection if you're offline.
+3. **Drive is the record.** Every file Diffuse uploads is tagged (privately, via
+   Drive `appProperties`) with what it is and which version. Each run starts by
+   listing those tags, so if you delete backups on Drive they're re-uploaded,
+   and after a reinstall or on a new phone nothing already on Drive is uploaded
+   twice.
+
+**When something goes wrong:** a dropped connection resumes the upload from where
+it stopped; network trouble and Google-side errors are retried automatically
+with increasing waits; items that fail are retried on the next attempt and named
+in the summary. You get a notification only when retries run out, when Drive is
+full, or when Google access was revoked and you need to reconnect.
 
 **Scheduling** is on by default: **daily, on Wi-Fi, while charging.** You can
 change the frequency (off / daily / weekly), the time of day, and the Wi-Fi and
@@ -136,8 +160,9 @@ Or produce an APK you can hand to someone:
 ```
 
 **3. On the phone:** open Diffuse → *Connect Drive* → scan the QR → *Allow* →
-*Back up now*. Grant the read permissions when prompted, and a `Diffuse` folder
-appears in your Drive.
+*Back up now*. Grant the read permissions when prompted (each category only
+needs its own, so if you deny photo access your messages still back up), and a
+`Diffuse` folder appears in your Drive.
 
 ---
 
@@ -150,7 +175,7 @@ Diffuse requests exactly these, and nothing that can modify your phone:
 | `READ_SMS` | read messages to back up |
 | `READ_CALL_LOG` | read call history to back up |
 | `READ_MEDIA_IMAGES` / `READ_MEDIA_VIDEO` | read photos/videos to back up |
-| `ACCESS_MEDIA_LOCATION` | preserve photo location metadata |
+| `ACCESS_MEDIA_LOCATION` | keep GPS location in backed-up photos and videos (optional) |
 | `INTERNET` / `ACCESS_NETWORK_STATE` | upload to Drive, check connectivity |
 | `POST_NOTIFICATIONS` | show backup progress/completion |
 | `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_DATA_SYNC` | run scheduled backups reliably |
@@ -199,8 +224,10 @@ built; see [docs/restore-design.md](docs/restore-design.md) for the safety model
 - **Kotlin + Jetpack Compose**, `minSdk 33` / `targetSdk 34`, single `com.diffuse`
   app module plus a small vendored `:lightui` module (Light Phone's design tokens).
 - Scheduling via **WorkManager**; credentials stored with **EncryptedSharedPreferences**.
-- The core logic is seam-tested with fakes (no Robolectric, no network) — the
-  suite is ~60 fast unit tests: `./gradlew :app:test`.
+- The core logic is seam-tested with fakes (no Robolectric, no network), plus a
+  local-server test of the real HTTP client's resumable uploads:
+  `./gradlew :app:testDebugUnitTest`. CI runs the tests, Android lint, the
+  read-only guard, and a self-test of the guard (`scripts/test-check-readonly.sh`).
 
 ---
 

@@ -1,6 +1,5 @@
 package com.diffuse.backup.model
 
-
 /**
  * One row from `content://call_log/calls`, mapped to the SMS Backup & Restore
  * `<call>` element. `call_log.date` is already epoch **milliseconds**.
@@ -17,8 +16,4 @@ data class CallRecord(
     /** number presentation: 1=allowed, 2=restricted, 3=unknown, 4=payphone. */
     val presentation: Int,
     val subscriptionId: String?,
-) : BackupItem {
-    override val sourceId: String get() = "call_log"
-    override val stableId: String get() = id.toString()
-    override val updatedAtEpochMs: Long get() = dateEpochMs
-}
+)

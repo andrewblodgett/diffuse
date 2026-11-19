@@ -17,16 +17,23 @@
          Do not add a write permission here. scripts/check-readonly.sh fails the
          build if one appears.
 
-         (INTERNET / ACCESS_NETWORK_STATE are for uploading to Google Drive in a
-         later phase; they do not grant any access to local user data.)
+         (INTERNET / ACCESS_NETWORK_STATE are for uploading to Google Drive; they do
+         not grant any access to local user data.)
          ==================================================================== -->
 
     <!-- Local user data: READ ONLY. -->
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <!-- READ_MEDIA_VISUAL_USER_SELECTED is deliberately NOT declared: it would let Android 14's
+         "select photos" choice become a lasting partial grant, and a backup of only some photos
+         looks complete when it isn't. Without full access, photos are reported as skipped.
+         (Lint's SelectedPhotoAccess check is disabled in app/build.gradle.kts for this reason.) -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+
+    <!-- Messages are optional: on a device without telephony, media still backs up. -->
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
 
     <!-- Network (for Google Drive upload). Not local-data access. -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -41,6 +48,7 @@
 
     <application
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@drawable/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
@@ -49,7 +57,6 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="@string/app_name"
             android:theme="@style/Theme.Diffuse">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -3,17 +3,17 @@ package com.diffuse.backup.format
 import com.diffuse.backup.model.MediaRecord
 
 /**
- * Streams a `media-*.xml` index for the copied photos/videos. This is Diffuse's own
- * (not SMS Backup & Restore) format: the media bytes live as original files under
- * `media/<relative_path>/<display_name>`, and each `<media>` row records the metadata
- * plus the `backup_path` where its bytes were written.
+ * Writes a `photos-*.xml` / `videos-*.xml` index for the uploaded media. This is
+ * Diffuse's own (not SMS Backup & Restore) format: the media bytes live as original files
+ * under `media/<relative_path>/`, and each `<media>` row records the metadata plus
+ * `backup_path` (where its bytes are in the archive) and `drive_file_id` (the exact Drive
+ * file, which disambiguates two files that ended up with the same name).
  */
 class MediaIndexXmlWriter(
-    private val out: Appendable,
     private val backupDateMs: Long,
     private val backupSet: String,
 ) {
-    fun start(count: Int) {
+    fun header(out: Appendable, count: Int) {
         out.append(Xml.DECLARATION).append('\n')
         val header = StringBuilder("<medias")
             .attr("count", count)
@@ -24,7 +24,7 @@ class MediaIndexXmlWriter(
         out.append(header).append('\n')
     }
 
-    fun writeMedia(r: MediaRecord, backupPath: String) {
+    fun media(out: Appendable, r: MediaRecord, backupPath: String, driveFileId: String?) {
         val sb = StringBuilder("  <media")
             .attr("kind", r.kind.sourceId)
             .attr("id", r.id)
@@ -37,11 +37,12 @@ class MediaIndexXmlWriter(
             .attr("date_modified", r.dateModifiedEpochMs)
             .attr("generation_modified", r.generationModified)
             .attr("backup_path", backupPath)
+            .attr("drive_file_id", driveFileId)
             .append(" />")
         out.append(sb).append('\n')
     }
 
-    fun finish() {
+    fun footer(out: Appendable) {
         out.append("</medias>").append('\n')
     }
 }

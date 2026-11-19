@@ -25,6 +25,7 @@ class DeviceAuthClient(
     private val clientSecret: String,
     private val deviceCodeUrl: String = DEVICE_CODE_URL,
     private val tokenUrl: String = TOKEN_URL,
+    private val revokeUrl: String = REVOKE_URL,
 ) {
     /** Step 1: request a device+user code for [scope]. */
     fun requestCode(scope: String = DriveScopes.DRIVE_FILE): DeviceCode {
@@ -66,7 +67,14 @@ class DeviceAuthClient(
         }
     }
 
-    /** Exchange a stored refresh token for a fresh access token (silent re-auth). */
+    /**
+     * Exchange a stored refresh token for a fresh access token (silent re-auth).
+     *
+     * @throws AuthRevokedException if Google says the refresh token is no longer valid (the
+     *   user removed Diffuse's access, changed their password, or the token expired). Only
+     *   signing in again fixes that.
+     * @throws java.io.IOException for a temporary failure at Google's end, so callers retry.
+     */
     fun refresh(refreshToken: String): TokenResponse {
         val resp = http.request(
             method = "POST",
@@ -80,9 +88,22 @@ class DeviceAuthClient(
                 ),
             ),
         )
-        require(resp.isSuccess) { "token refresh failed: ${resp.code} ${resp.body}" }
-        return json.decodeFromString<TokenResponse>(resp.body)
+        if (resp.isSuccess) return json.decodeFromString<TokenResponse>(resp.body)
+        val err = errorOf(resp.body)
+        when {
+            err == "invalid_grant" || err == "unauthorized_client" -> throw AuthRevokedException(err)
+            resp.code == 429 || resp.code >= 500 -> throw java.io.IOException("token refresh failed: ${resp.code}")
+            else -> throw IllegalStateException("token refresh failed: ${resp.code} ${err ?: resp.body}")
+        }
     }
+
+    /**
+     * Ask Google to revoke [token] (refresh or access), so a signed-out phone's credentials
+     * stop working everywhere. Best-effort: returns false instead of throwing.
+     */
+    fun revoke(token: String): Boolean = runCatching {
+        http.request("POST", revokeUrl, body = Http.Body.Form(mapOf("token" to token))).isSuccess
+    }.getOrDefault(false)
 
     private fun errorOf(body: String): String? =
         runCatching { json.decodeFromString<ErrorResponse>(body).error }.getOrNull()
@@ -90,10 +111,15 @@ class DeviceAuthClient(
     private companion object {
         const val DEVICE_CODE_URL = "https://oauth2.googleapis.com/device/code"
         const val TOKEN_URL = "https://oauth2.googleapis.com/token"
+        const val REVOKE_URL = "https://oauth2.googleapis.com/revoke"
         const val GRANT_DEVICE_CODE = "urn:ietf:params:oauth:grant-type:device_code"
         val json = Json { ignoreUnknownKeys = true }
     }
 }
+
+/** Google no longer accepts the stored refresh token; the user has to sign in again. */
+class AuthRevokedException(reason: String?) :
+    Exception("Google Drive access was revoked or expired (${reason ?: "unknown"}). Reconnect Drive in Diffuse.")
 
 /** Response to the device/code request. */
 @Serializable

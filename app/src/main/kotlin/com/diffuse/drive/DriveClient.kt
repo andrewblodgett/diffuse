@@ -1,178 +1,164 @@
 package com.diffuse.drive
 
 import com.diffuse.drive.auth.AccessTokens
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.InputStream
 import java.net.URLEncoder
 
+/** Bytes to upload: exactly [length] bytes from a source [open] can re-open at will. */
+class UploadContent(val length: Long, val open: () -> InputStream) {
+    companion object {
+        fun of(file: File) = UploadContent(file.length()) { file.inputStream() }
+    }
+}
+
+/** One file Diffuse created on Drive, as seen in a listing. */
+data class DriveFile(
+    val id: String,
+    val name: String,
+    /** Private key/value tags Diffuse attached at upload (Drive `appProperties`). */
+    val appProperties: Map<String, String> = emptyMap(),
+)
+
 /** The Drive operations Diffuse needs; implemented by [DriveClient], fakeable in tests. */
 interface DriveApi {
+    /** Id of folder [name] under [parentId] (Drive root when null), creating it if absent. */
     fun ensureFolder(name: String, parentId: String? = null): String
-    /** Upload a local file, size-routing simple vs resumable by its length. */
-    fun upload(name: String, parentId: String, mimeType: String, file: File): String
 
     /**
-     * Overwrite the content of the existing file [fileId] with [file]'s bytes, keeping the same
-     * id, name, and parent. Lets a stable-named document (`calls.xml`, `sms.xml`, …) be refreshed
-     * in place each run instead of piling up a new copy. Default throws so fakes that never update
-     * fail loudly if one is unexpectedly called.
+     * Every non-trashed, non-folder file visible to this app, oldest first. Under the
+     * `drive.file` scope that is exactly the files Diffuse itself created.
      */
-    fun update(fileId: String, mimeType: String, file: File): Unit = error("update not supported")
-    /**
-     * Upload [length] bytes streamed from [open] (a re-openable read-only source such as a
-     * content-provider stream), size-routing on [length]. Lets a photo/video go straight
-     * provider→Drive with no local copy.
-     */
-    fun upload(name: String, parentId: String, mimeType: String, length: Long, open: () -> InputStream): String
+    fun listFiles(): List<DriveFile>
 
-    /**
-     * The signed-in account's email address (Drive `about.user.emailAddress`), or null if it
-     * can't be determined. Lets the UI show *which* Google account is connected.
-     */
+    /** Create file [name] in [parentId] with [content] and [appProperties]; returns its id. */
+    fun create(
+        name: String,
+        parentId: String,
+        mimeType: String,
+        appProperties: Map<String, String>,
+        content: UploadContent,
+    ): String
+
+    /** Replace the content of existing file [fileId] (same id, name and folder) and its [appProperties]. */
+    fun updateContent(
+        fileId: String,
+        mimeType: String,
+        appProperties: Map<String, String>,
+        content: UploadContent,
+    )
+
+    /** Set [appProperties] on existing file [fileId] without touching its content. */
+    fun setAppProperties(fileId: String, appProperties: Map<String, String>)
+
+    /** The signed-in account's email address, or null if it can't be determined. */
     fun accountEmail(): String? = null
-
-    /**
-     * Every non-trashed file id currently visible to this app on Drive. Under `drive.file`
-     * scope that's exactly (and only) the files Diffuse itself created, so this is a cheap,
-     * complete picture of what's actually still backed up — the ground truth a local upload
-     * manifest should be checked against. Default returns empty so existing fakes that don't
-     * care about reconciliation keep compiling.
-     */
-    fun listAllFileIds(): Set<String> = emptySet()
 }
 
 /**
- * Minimal Google Drive v3 REST client — just what a one-way backup needs: find-or-create
- * a folder, and upload a file (simple multipart for small files, resumable for large).
- * Everything the app writes lives under the `drive.file` scope, so Drive only ever shows
- * this client files Diffuse itself created.
+ * Minimal Google Drive v3 REST client: find-or-create folders, list our files, and upload.
+ * Everything lives under the `drive.file` scope, so Drive only ever shows this client the
+ * files Diffuse itself created.
+ *
+ * Built to keep going on a flaky phone connection:
+ *  - Every request attaches a bearer token and, on a 401, refreshes it once and retries.
+ *  - Transient failures (network errors, 408/429/5xx, rate limits) are retried with
+ *    exponential backoff, up to [maxAttempts] tries.
+ *  - Every upload is a **resumable** session. If the connection drops part-way through a
+ *    video, the client asks Drive how many bytes it committed and continues from there
+ *    instead of starting over, and a retry can never create a second copy of the file.
  *
  * Pure logic over the [Http] seam + [AccessTokens]; unit-tested with fakes, no network.
- * Every call attaches a bearer token and, on a 401, refreshes once and retries.
  */
 class DriveClient(
     private val http: Http,
     private val tokens: AccessTokens,
-    /** Files at or below this size use simple multipart upload; larger use resumable. */
-    val resumableThresholdBytes: Long = 5L * 1024 * 1024,
+    private val maxAttempts: Int = 5,
+    /** Sleeps between retries; injectable so tests run instantly. */
+    private val sleep: (Long) -> Unit = Thread::sleep,
     private val apiBase: String = API_BASE,
     private val uploadBase: String = UPLOAD_BASE,
 ) : DriveApi {
-    val folderMimeType: String get() = FOLDER_MIME
 
-    /**
-     * Return the id of the folder named [name] under [parentId] (or the Drive root when
-     * null), creating it if absent. Idempotent: safe to call every run. Under `drive.file`
-     * the list query only sees folders this app created, so it reliably finds our own.
-     */
-    override fun ensureFolder(name: String, parentId: String?): String {
-        existingFolder(name, parentId)?.let { return it }
-        return createFolder(name, parentId)
+    override fun ensureFolder(name: String, parentId: String?): String = withRetry {
+        existingFolder(name, parentId) ?: createFolder(name, parentId)
     }
 
+    /** The oldest matching folder, so that if a duplicate ever got created we keep using the original. */
     private fun existingFolder(name: String, parentId: String?): String? {
         val q = buildString {
             append("mimeType='").append(FOLDER_MIME).append("'")
-            append(" and name='").append(name.replace("'", "\\'")).append("'")
+            append(" and name='").append(escapeQuery(name)).append("'")
             append(" and trashed=false")
-            if (parentId != null) append(" and '").append(parentId).append("' in parents")
+            if (parentId != null) append(" and '").append(escapeQuery(parentId)).append("' in parents")
         }
-        val url = "$apiBase/files?q=${enc(q)}&fields=files(id,name)&spaces=drive"
+        val url = "$apiBase/files?q=${enc(q)}&fields=files(id)&orderBy=createdTime&spaces=drive"
         val resp = authed("GET", url)
-        require(resp.isSuccess) { "list folder failed: ${resp.code} ${resp.body}" }
+        if (!resp.isSuccess) throw DriveHttpException.from("Find folder '$name'", resp)
         return json.decodeFromString<FileList>(resp.body).files.firstOrNull()?.id
     }
 
     private fun createFolder(name: String, parentId: String?): String {
-        val meta = FileMetadata(name = name, mimeType = FOLDER_MIME, parents = parentId?.let { listOf(it) })
-        val resp = authed(
-            "POST",
-            "$apiBase/files?fields=id",
-            body = Http.Body.Bytes(json.encodeToString(FileMetadata.serializer(), meta).toByteArray(), JSON_CT),
-        )
-        require(resp.isSuccess) { "create folder failed: ${resp.code} ${resp.body}" }
-        return json.decodeFromString<DriveFile>(resp.body).id
+        val meta = Metadata(name = name, mimeType = FOLDER_MIME, parents = parentId?.let { listOf(it) })
+        val resp = authed("POST", "$apiBase/files?fields=id", body = jsonBody(meta))
+        if (!resp.isSuccess) throw DriveHttpException.from("Create folder '$name'", resp)
+        return json.decodeFromString<FileRef>(resp.body).id
     }
 
-    /** Upload [file] as [name] under [parentId], picking simple vs resumable by size. */
-    override fun upload(name: String, parentId: String, mimeType: String, file: File): String =
-        if (file.length() <= resumableThresholdBytes) uploadSimple(name, parentId, mimeType, file)
-        else uploadResumable(name, parentId, mimeType, file)
+    override fun listFiles(): List<DriveFile> {
+        val q = "trashed=false and mimeType!='$FOLDER_MIME'"
+        val files = mutableListOf<DriveFile>()
+        var pageToken: String? = null
+        do {
+            val url = buildString {
+                append("$apiBase/files?q=${enc(q)}&spaces=drive&pageSize=1000&orderBy=createdTime")
+                append("&fields=${enc("nextPageToken,files(id,name,appProperties)")}")
+                pageToken?.let { append("&pageToken=").append(enc(it)) }
+            }
+            val page = withRetry {
+                val resp = authed("GET", url)
+                if (!resp.isSuccess) throw DriveHttpException.from("List Drive files", resp)
+                json.decodeFromString<FileListPage>(resp.body)
+            }
+            page.files.mapTo(files) { DriveFile(it.id, it.name, it.appProperties.orEmpty()) }
+            pageToken = page.nextPageToken
+        } while (pageToken != null)
+        return files
+    }
 
-    /**
-     * Overwrite [fileId]'s content with [file] via a media PATCH (`uploadType=media`) — no
-     * metadata change, so id/name/parent are preserved. Small docs only, so a plain streamed
-     * body is fine (no resumable session needed).
-     */
-    override fun update(fileId: String, mimeType: String, file: File) {
+    override fun create(
+        name: String,
+        parentId: String,
+        mimeType: String,
+        appProperties: Map<String, String>,
+        content: UploadContent,
+    ): String {
+        val meta = Metadata(name = name, parents = listOf(parentId), appProperties = appProperties)
+        return resumableUpload("POST", "$uploadBase/files?uploadType=resumable&fields=id", meta, mimeType, content)
+    }
+
+    override fun updateContent(
+        fileId: String,
+        mimeType: String,
+        appProperties: Map<String, String>,
+        content: UploadContent,
+    ) {
+        val url = "$uploadBase/files/${enc(fileId)}?uploadType=resumable&fields=id"
+        resumableUpload("PATCH", url, Metadata(appProperties = appProperties), mimeType, content)
+    }
+
+    override fun setAppProperties(fileId: String, appProperties: Map<String, String>) = withRetry {
         val resp = authed(
             "PATCH",
-            "$uploadBase/files/$fileId?uploadType=media&fields=id",
-            body = Http.Body.FileBody(file, mimeType),
+            "$apiBase/files/${enc(fileId)}?fields=id",
+            body = jsonBody(Metadata(appProperties = appProperties)),
         )
-        require(resp.isSuccess) { "update failed: ${resp.code} ${resp.body}" }
+        if (!resp.isSuccess) throw DriveHttpException.from("Tag file", resp)
     }
 
-    /** Streaming counterpart of [upload]: size-routes on [length], never touching local disk. */
-    override fun upload(name: String, parentId: String, mimeType: String, length: Long, open: () -> InputStream): String =
-        if (length <= resumableThresholdBytes)
-            uploadSimpleCore(name, parentId) { meta -> Http.Body.RelatedStream(meta, open, length, mimeType) }
-        else
-            uploadResumableCore(name, parentId, mimeType, length) { Http.Body.StreamBody(open, length, mimeType) }
-
-    /** Simple `multipart/related` upload (metadata + bytes in one request). */
-    fun uploadSimple(name: String, parentId: String, mimeType: String, file: File): String =
-        uploadSimpleCore(name, parentId) { meta -> Http.Body.RelatedFile(meta, file, mimeType) }
-
-    /**
-     * Resumable upload: initiate a session, then PUT the file bytes. Robust for large
-     * videos on a flaky connection — the single PUT can be re-driven against the session
-     * URI. (Chunked upload with progress is a fast-follow.)
-     */
-    fun uploadResumable(name: String, parentId: String, mimeType: String, file: File): String =
-        uploadResumableCore(name, parentId, mimeType, file.length()) { Http.Body.FileBody(file, mimeType) }
-
-    /** Shared simple-upload body: [relatedBody] wraps the JSON metadata + media part (file or stream). */
-    private inline fun uploadSimpleCore(name: String, parentId: String, relatedBody: (metadataJson: String) -> Http.Body): String {
-        val meta = FileMetadata(name = name, parents = listOf(parentId))
-        val resp = authed(
-            "POST",
-            "$uploadBase/files?uploadType=multipart&fields=id",
-            body = relatedBody(json.encodeToString(FileMetadata.serializer(), meta)),
-        )
-        require(resp.isSuccess) { "simple upload failed: ${resp.code} ${resp.body}" }
-        return json.decodeFromString<DriveFile>(resp.body).id
-    }
-
-    /** Shared resumable-upload flow: init a session with [length], then PUT [putBody]. */
-    private inline fun uploadResumableCore(name: String, parentId: String, mimeType: String, length: Long, putBody: () -> Http.Body): String {
-        val meta = FileMetadata(name = name, parents = listOf(parentId))
-        val init = authed(
-            "POST",
-            "$uploadBase/files?uploadType=resumable&fields=id",
-            headers = mapOf(
-                "X-Upload-Content-Type" to mimeType,
-                "X-Upload-Content-Length" to length.toString(),
-            ),
-            body = Http.Body.Bytes(json.encodeToString(FileMetadata.serializer(), meta).toByteArray(), JSON_CT),
-        )
-        require(init.isSuccess) { "resumable init failed: ${init.code} ${init.body}" }
-        val session = init.header("Location")
-            ?: error("resumable init returned no Location header")
-
-        val put = authed("PUT", session, body = putBody())
-        require(put.isSuccess) { "resumable PUT failed: ${put.code} ${put.body}" }
-        return json.decodeFromString<DriveFile>(put.body).id
-    }
-
-    /**
-     * Read the connected account's email from Drive's `about` resource. `drive.file` is enough to
-     * call `about.get` for the authenticated user. Returns null (never throws) if the call fails,
-     * so a missing email never breaks the UI.
-     */
+    /** Never throws, so a missing email can't break the UI. */
     override fun accountEmail(): String? = try {
         val resp = authed("GET", "$apiBase/about?fields=user")
         if (resp.isSuccess) json.decodeFromString<About>(resp.body).user?.emailAddress else null
@@ -180,29 +166,103 @@ class DriveClient(
         null
     }
 
+    // --- Resumable uploads --------------------------------------------------------------
+
     /**
-     * List every non-trashed, non-folder file id visible to this app, paging through the
-     * whole result set. Under `drive.file` scope Drive only shows files Diffuse created, so
-     * this is the complete set of what's really still on Drive right now — used to reconcile
-     * the local [com.diffuse.drive.store.UploadManifest] against reality.
+     * Start a resumable session ([initMethod] on [initUrl] with [meta]) and send [content]
+     * through it. If Drive forgets the session (404/410, e.g. it expired), start a new one.
      */
-    override fun listAllFileIds(): Set<String> {
-        val q = "trashed=false and mimeType!='$FOLDER_MIME'"
-        val ids = mutableSetOf<String>()
-        var pageToken: String? = null
-        do {
-            val url = buildString {
-                append("$apiBase/files?q=${enc(q)}&fields=nextPageToken,files(id)&spaces=drive&pageSize=1000")
-                pageToken?.let { append("&pageToken=").append(enc(it)) }
+    private fun resumableUpload(
+        initMethod: String,
+        initUrl: String,
+        meta: Metadata,
+        mimeType: String,
+        content: UploadContent,
+    ): String {
+        var sessionsStarted = 0
+        while (true) {
+            val session = withRetry { startSession(initMethod, initUrl, meta, mimeType, content.length) }
+            sessionsStarted++
+            try {
+                return sendToSession(session, mimeType, content)
+            } catch (e: DriveHttpException) {
+                val sessionGone = e.code == 404 || e.code == 410
+                if (!sessionGone || sessionsStarted >= MAX_SESSIONS) throw e
             }
-            val resp = authed("GET", url)
-            require(resp.isSuccess) { "list files failed: ${resp.code} ${resp.body}" }
-            val page = json.decodeFromString<FileListPage>(resp.body)
-            page.files.forEach { ids += it.id }
-            pageToken = page.nextPageToken
-        } while (pageToken != null)
-        return ids
+        }
     }
+
+    private fun startSession(method: String, url: String, meta: Metadata, mimeType: String, length: Long): String {
+        val resp = authed(
+            method,
+            url,
+            headers = mapOf("X-Upload-Content-Type" to mimeType, "X-Upload-Content-Length" to length.toString()),
+            body = jsonBody(meta),
+        )
+        if (!resp.isSuccess) throw DriveHttpException.from("Start upload", resp)
+        return resp.header("Location") ?: throw DriveHttpException(resp.code, null, "Start upload: no session URL")
+    }
+
+    /**
+     * Send [content] to [session], resuming after failures. Drive answers a partial upload
+     * with 308 and a `Range: bytes=0-N` header naming what it has committed. After a failed
+     * request we ask for that explicitly (an empty PUT whose Content-Range names only the
+     * total size) and continue from byte N+1.
+     */
+    private fun sendToSession(session: String, mimeType: String, content: UploadContent): String {
+        val total = content.length
+        var offset = 0L
+        var askForProgressFirst = false
+        var failures = 0
+        while (true) {
+            try {
+                val resp = if (askForProgressFirst) {
+                    authed("PUT", session, mapOf("Content-Range" to "bytes */$total"), Http.Body.Bytes(ByteArray(0), mimeType))
+                } else {
+                    val range = "bytes $offset-${total - 1}/$total"
+                    authed("PUT", session, mapOf("Content-Range" to range), Http.Body.Stream(content.open, offset, total - offset, mimeType))
+                }
+                when {
+                    resp.isSuccess -> return json.decodeFromString<FileRef>(resp.body).id
+                    resp.code == RESUME_INCOMPLETE -> {
+                        val committed = committedBytes(resp)
+                        val madeProgress = askForProgressFirst || committed > offset
+                        offset = committed
+                        askForProgressFirst = false
+                        if (!madeProgress) throw DriveHttpException(503, null, "Upload made no progress")
+                    }
+                    else -> throw DriveHttpException.from("Upload", resp)
+                }
+            } catch (e: Exception) {
+                if (!isTransient(e) || ++failures >= maxAttempts) throw e
+                sleep(backoffMs(failures))
+                askForProgressFirst = true
+            }
+        }
+    }
+
+    /** Bytes Drive has committed, from a 308's `Range: bytes=0-N` header (none → 0). */
+    private fun committedBytes(resp: HttpResp): Long =
+        resp.header("Range")?.substringAfterLast('-')?.trim()?.toLongOrNull()?.plus(1) ?: 0L
+
+    // --- Plumbing -------------------------------------------------------------------------
+
+    /** Run [block], retrying transient failures with exponential backoff. */
+    private fun <T> withRetry(block: () -> T): T {
+        var attempt = 1
+        while (true) {
+            try {
+                return block()
+            } catch (e: Exception) {
+                if (!isTransient(e) || attempt >= maxAttempts) throw e
+                sleep(backoffMs(attempt))
+                attempt++
+            }
+        }
+    }
+
+    /** 1s, 2s, 4s, 8s, ... capped at 30s. */
+    private fun backoffMs(attempt: Int): Long = (1_000L shl (attempt - 1).coerceAtMost(5)).coerceAtMost(30_000L)
 
     /** Attach a bearer token; on 401 refresh once and retry. */
     private fun authed(
@@ -219,24 +279,38 @@ class DriveClient(
     private fun withAuth(headers: Map<String, String>, token: String) =
         headers + ("Authorization" to "Bearer $token")
 
+    private fun jsonBody(meta: Metadata) =
+        Http.Body.Bytes(json.encodeToString(Metadata.serializer(), meta).toByteArray(), JSON_CT)
+
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
+    /** Drive query strings quote with '…' and escape with backslashes. */
+    private fun escapeQuery(s: String) = s.replace("\\", "\\\\").replace("'", "\\'")
+
     @Serializable
-    private data class FileMetadata(
-        val name: String,
+    private data class Metadata(
+        val name: String? = null,
         val mimeType: String? = null,
         val parents: List<String>? = null,
+        val appProperties: Map<String, String>? = null,
     )
 
     @Serializable
-    private data class DriveFile(val id: String, val name: String = "")
+    private data class FileRef(val id: String)
 
     @Serializable
-    private data class FileList(val files: List<DriveFile> = emptyList())
+    private data class FileList(val files: List<FileRef> = emptyList())
+
+    @Serializable
+    private data class ListedFile(
+        val id: String,
+        val name: String = "",
+        val appProperties: Map<String, String>? = null,
+    )
 
     @Serializable
     private data class FileListPage(
-        val files: List<DriveFile> = emptyList(),
+        val files: List<ListedFile> = emptyList(),
         val nextPageToken: String? = null,
     )
 
@@ -244,16 +318,16 @@ class DriveClient(
     private data class About(val user: AboutUser? = null)
 
     @Serializable
-    private data class AboutUser(
-        val emailAddress: String? = null,
-        val displayName: String? = null,
-    )
+    private data class AboutUser(val emailAddress: String? = null)
 
     private companion object {
         const val API_BASE = "https://www.googleapis.com/drive/v3"
         const val UPLOAD_BASE = "https://www.googleapis.com/upload/drive/v3"
         const val FOLDER_MIME = "application/vnd.google-apps.folder"
         const val JSON_CT = "application/json; charset=UTF-8"
+        const val RESUME_INCOMPLETE = 308
+        const val MAX_SESSIONS = 3
+        // Null fields are left out of request JSON (encodeDefaults is off and they default to null).
         val json = Json { ignoreUnknownKeys = true }
     }
 }
