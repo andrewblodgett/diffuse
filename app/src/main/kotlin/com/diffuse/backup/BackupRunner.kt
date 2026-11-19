@@ -86,9 +86,11 @@ class BackupRunner(
 
     suspend fun run(): BackupSummary = withContext(Dispatchers.IO) {
         var summary = BackupSummary()
-        if (content.messages) {
+        if (content.calls) {
             progress.onStage(BackupStage.Calls)
             summary = summary.copy(calls = backUpCalls())
+        }
+        if (content.messages) {
             progress.onStage(BackupStage.Messages)
             val (sms, mms) = backUpMessages()
             summary = summary.copy(sms = sms, mms = mms)

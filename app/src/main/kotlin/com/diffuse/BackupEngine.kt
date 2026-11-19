@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.net.Uri
 import android.provider.MediaStore
+import android.provider.Settings
 import com.diffuse.backup.BackupContent
 import com.diffuse.backup.BackupProgress
 import com.diffuse.backup.BackupRunner
@@ -50,6 +51,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.InputStream
+import java.security.MessageDigest
 import java.time.YearMonth
 
 /** Live progress of the run in progress. */
@@ -117,6 +119,18 @@ class BackupEngine private constructor(context: Context) {
     private val legacyManifest = LegacyManifest(File(app.filesDir, "upload-manifest.properties"))
     private val settings = BackupSettings(app)
 
+    /**
+     * Which phone this is, so two phones backing up to one Drive keep separate documents.
+     * A hash of ANDROID_ID, which survives reinstalling Diffuse but not a factory reset, so a
+     * reinstall keeps updating the same monthly files.
+     */
+    private val deviceId: String by lazy {
+        val androidId = Settings.Secure.getString(app.contentResolver, Settings.Secure.ANDROID_ID)
+            ?: "unknown-device"
+        MessageDigest.getInstance("SHA-256").digest(androidId.toByteArray())
+            .take(4).joinToString("") { "%02x".format(it) }
+    }
+
     private val runLock = Mutex()
     /** Serialises credential writes, so a sign-out's background clear can't land after a new sign-in. */
     private val credentialLock = Mutex()
@@ -146,16 +160,22 @@ class BackupEngine private constructor(context: Context) {
 
     // --- Connection -------------------------------------------------------------------------
 
-    /** Store the tokens from a completed QR sign-in and look up the account's email. */
-    suspend fun onSignedIn(tokens: TokenResponse) {
-        credentialLock.withLock {
+    /**
+     * Store the tokens from a completed QR sign-in and look up the account's email. Returns
+     * false, storing nothing, if Google sent no refresh token: without one the connection
+     * would quietly stop working when the first access token expires an hour later.
+     */
+    suspend fun onSignedIn(tokens: TokenResponse): Boolean {
+        val connected = credentialLock.withLock {
             withContext(Dispatchers.IO) {
                 recentUploads.clear() // it describes whichever account was connected before
                 tokenProvider.onSignedIn(tokens)
+                credentialStore.isConnected.also { ok -> if (!ok) credentialStore.clear() }
             }
         }
-        _connected.value = true
-        background.launch { refreshAccountEmail() }
+        _connected.value = connected
+        if (connected) background.launch { refreshAccountEmail() }
+        return connected
     }
 
     /** Fetch the account email if it isn't known yet (e.g. connected before this was shown). */
@@ -202,6 +222,19 @@ class BackupEngine private constructor(context: Context) {
     // --- Running ----------------------------------------------------------------------------
 
     /**
+     * Why [runBackup] would end at once without backing anything up, or null if it would run.
+     * Cheap and side-effect free, so the worker can check before showing a notification.
+     */
+    fun reasonNotToRun(): RunOutcome? {
+        if (!credentialsConfigured || !_connected.value) return RunOutcome.NotConnected
+        val selected = settings.prefsValue.content
+        if (selected.isEmpty) return RunOutcome.NothingSelected
+        if ((selected intersect BackupPermissions.permitted(app)).isEmpty) return RunOutcome.NeedsPermission
+        if (runLock.isLocked) return RunOutcome.AlreadyRunning
+        return null
+    }
+
+    /**
      * Run one backup: list what's on Drive, then export and upload call log, messages, photos
      * and videos in that order (see [BackupRunner]), and record the result as [lastRun].
      *
@@ -215,11 +248,10 @@ class BackupEngine private constructor(context: Context) {
      *   problems are worth retrying later; the next run picks up where this one stopped.
      */
     suspend fun runBackup(): RunOutcome {
-        if (!credentialsConfigured || !_connected.value) return RunOutcome.NotConnected
+        reasonNotToRun()?.let { return it }
         val selected = settings.prefsValue.content
-        if (selected.isEmpty) return RunOutcome.NothingSelected
         val included = selected intersect BackupPermissions.permitted(app)
-        if (included.isEmpty) return RunOutcome.NeedsPermission
+        if (included.isEmpty) return RunOutcome.NeedsPermission // permissions changed just now
         if (!runLock.tryLock()) return RunOutcome.AlreadyRunning
 
         _progress.value = RunProgress()
@@ -286,7 +318,7 @@ class BackupEngine private constructor(context: Context) {
             workDir = workDir,
             month = YearMonth.now(),
             mediaSink = mediaSink,
-            fileSink = DriveFileSink(driveClient, folders, inventory),
+            fileSink = DriveFileSink(driveClient, folders, inventory, deviceId),
             progress = progressListener,
             content = content,
         )

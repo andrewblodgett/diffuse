@@ -15,10 +15,11 @@ class DriveFileSinkTest {
 
     private val drive = FakeDrive()
 
-    private fun sink() = DriveFileSink(
+    private fun sink(device: String = "PHONE_A") = DriveFileSink(
         drive,
         DriveFolderTree(drive, "ROOT"),
-        DriveInventory.load(drive, RecentUploads(File(tmp.root, "recent.tsv")), emptyMap()),
+        DriveInventory.load(drive, RecentUploads(File(tmp.root, "recent-$device.tsv")), emptyMap()),
+        deviceId = device,
     )
 
     private fun doc(name: String, fingerprint: String) = ArchiveDocument(
@@ -32,7 +33,7 @@ class DriveFileSinkTest {
         assertEquals(DocumentUpload.Created, sink().put(doc("sms-2026-11.xml", "f1")))
         assertTrue(drive.created.single().startsWith("sms-2026-11.xml@ROOT"))
         val tags = drive.files.single().appProperties
-        assertEquals("doc:sms-2026-11.xml", tags[DriveInventory.KEY_PROPERTY])
+        assertEquals("doc:PHONE_A:sms-2026-11.xml", tags[DriveInventory.KEY_PROPERTY])
         assertEquals("f1", tags[DriveInventory.VERSION_PROPERTY])
         assertTrue("a top-level doc never creates a subfolder", drive.folders.isEmpty())
     }
@@ -53,6 +54,17 @@ class DriveFileSinkTest {
         assertEquals("f2", drive.files.single().appProperties[DriveInventory.VERSION_PROPERTY])
     }
 
+    @Test fun two_phones_keep_separate_documents() {
+        sink("PHONE_A").put(doc("sms-2026-11.xml", "a1"))
+        assertEquals(DocumentUpload.Created, sink("PHONE_B").put(doc("sms-2026-11.xml", "b1")))
+
+        assertEquals(listOf("sms-2026-11.xml", "sms-2026-11-PHONE_B.xml"), drive.files.map { it.name })
+        // Each phone keeps updating its own file and never touches the other's.
+        assertEquals(DocumentUpload.Updated, sink("PHONE_A").put(doc("sms-2026-11.xml", "a2")))
+        assertEquals(DocumentUpload.Updated, sink("PHONE_B").put(doc("sms-2026-11.xml", "b2")))
+        assertEquals(listOf("a2", "b2"), drive.files.map { it.appProperties[DriveInventory.VERSION_PROPERTY] })
+    }
+
     @Test fun a_new_month_starts_a_new_file_and_leaves_the_old_one_alone() {
         sink().put(doc("sms-2026-10.xml", "f1"))
         assertEquals(DocumentUpload.Created, sink().put(doc("sms-2026-11.xml", "f2")))
@@ -61,7 +73,7 @@ class DriveFileSinkTest {
     }
 
     @Test fun a_document_deleted_since_the_listing_is_recreated() {
-        drive.files += DriveFile("GONE", "calls-2026-11.xml", DriveInventory.tags("doc:calls-2026-11.xml", "old"))
+        drive.files += DriveFile("GONE", "calls-2026-11.xml", DriveInventory.tags("doc:PHONE_A:calls-2026-11.xml", "old"))
         val stale = sink() // its listing still shows GONE
         drive.files.clear() // deleted between the listing and the upload
 

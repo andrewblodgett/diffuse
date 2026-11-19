@@ -47,8 +47,14 @@ class BackupNotifier(context: Context) {
 
     fun notifyFailure(message: String) = result("Backup failed", message)
 
-    fun notifyPermissionsNeeded() =
-        result("Backup needs permission", "Open Diffuse and allow access to back up your data.")
+    /** Posted in its own slot, so a completion or failure notice can't replace it. */
+    fun notifyPermissionsNeeded() = nm.notify(
+        PERMISSION_ID,
+        base("Backup needs permission", "Open Diffuse and allow access to back up everything you selected.")
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .build(),
+    )
 
     fun notifyReconnectNeeded() =
         result("Reconnect Google Drive", "Diffuse lost access to your Drive. Open Diffuse and tap Connect Drive.")
@@ -79,5 +85,6 @@ class BackupNotifier(context: Context) {
         /** Stable id of the ongoing foreground/progress notification. */
         const val ONGOING_ID = 1001
         private const val RESULT_ID = 1002
+        private const val PERMISSION_ID = 1003
     }
 }

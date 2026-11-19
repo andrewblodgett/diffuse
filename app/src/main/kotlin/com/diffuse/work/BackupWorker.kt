@@ -15,6 +15,7 @@ import com.diffuse.drive.auth.AuthRevokedException
 import com.diffuse.notify.BackupNotifier
 import com.diffuse.util.causeOfType
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.filterNotNull
@@ -46,6 +47,8 @@ class BackupWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
     private val isManual = inputData.getBoolean(KEY_MANUAL, false)
 
     override suspend fun doWork(): Result = coroutineScope {
+        // Nothing to do (signed out, nothing selected, ...)? Finish without flashing a notification.
+        engine.reasonNotToRun()?.let { return@coroutineScope handle(it) }
         promoteToForeground()
         val progressUpdates = launch {
             engine.progress.filterNotNull()
@@ -74,7 +77,9 @@ class BackupWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
                 else -> retryOrGiveUp(e)
             }
         } finally {
-            progressUpdates.cancel()
+            // Wait for the collector to stop, so a late progress update can't re-post the
+            // ongoing notification after it's been cleared.
+            progressUpdates.cancelAndJoin()
             notifier.clearProgress()
         }
     }

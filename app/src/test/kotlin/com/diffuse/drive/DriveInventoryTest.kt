@@ -62,8 +62,8 @@ class DriveInventoryTest {
 
     @Test fun recordUpload_updates_the_inventory_and_the_journal() {
         val inv = DriveInventory(emptyList(), journal())
-        inv.recordUpload("doc:sms-2026-11.xml", DriveInventory.Entry("D", "sms-2026-11.xml", "f"))
-        assertEquals("D", inv["doc:sms-2026-11.xml"]!!.fileId)
+        inv.recordUpload("doc:A:sms-2026-11.xml", DriveInventory.Entry("D", "sms-2026-11.xml", "f"))
+        assertEquals("D", inv["doc:A:sms-2026-11.xml"]!!.fileId)
         assertEquals("D", journal().load().single().fileId)
     }
 }

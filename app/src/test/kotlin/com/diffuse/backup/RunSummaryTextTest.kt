@@ -26,4 +26,13 @@ class RunSummaryTextTest {
         )
         assertEquals("4 photos (4 new); 1 item failed, will retry; skipped messages & calls, videos: permission needed", text)
     }
+
+    @Test fun call_log_and_messages_are_reported_separately() {
+        val text = RunSummaryText.describe(
+            BackupSummary(sms = 5),
+            included = BackupContent(pictures = false, videos = false, messages = true, calls = false),
+            skippedForPermission = BackupContent(pictures = false, videos = false, messages = false, calls = true),
+        )
+        assertEquals("5 messages; skipped call log: permission needed", text)
+    }
 }

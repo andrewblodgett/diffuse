@@ -107,6 +107,16 @@ class BackupRunnerTest {
         assertEquals(0, summary.calls)
     }
 
+    @Test fun messages_back_up_without_the_call_log_and_vice_versa() = runTest {
+        val onlyMessages = CapturingFileSink()
+        runner(sources(), onlyMessages, content = BackupContent(pictures = false, videos = false, messages = true, calls = false)).run()
+        assertEquals(listOf("sms-2026-11.xml"), onlyMessages.docs.keys.toList())
+
+        val onlyCalls = CapturingFileSink()
+        runner(sources(), onlyCalls, content = BackupContent(pictures = false, videos = false, messages = false, calls = true)).run()
+        assertEquals(listOf("calls-2026-11.xml"), onlyCalls.docs.keys.toList())
+    }
+
     @Test fun a_failed_item_is_counted_and_left_out_of_the_index() = runTest {
         val files = CapturingFileSink()
         val media = MediaSink { r ->

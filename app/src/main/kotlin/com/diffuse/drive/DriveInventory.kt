@@ -125,7 +125,7 @@ class DriveInventory(
         private const val MAX_PROPERTY_BYTES = 124
 
         fun mediaKey(stableId: String) = "media:$stableId"
-        fun documentKey(name: String) = "doc:$name"
+        fun documentKey(deviceId: String, name: String) = "doc:$deviceId:$name"
         fun tags(key: String, version: String) = mapOf(KEY_PROPERTY to key, VERSION_PROPERTY to version)
 
         /** Tags for a media file. The folder is left out if it's too long for one property. */

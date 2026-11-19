@@ -128,7 +128,12 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
             }
             when (result) {
                 is PollResult.Authorized -> {
-                    engine.onSignedIn(result.tokens)
+                    if (!engine.onSignedIn(result.tokens)) {
+                        return failSignIn(
+                            "Google didn't grant lasting access. Remove Diffuse at " +
+                                "myaccount.google.com/permissions, then connect again.",
+                        )
+                    }
                     resetSignIn()
                     homeMessage = "Connected to Google Drive."
                     return

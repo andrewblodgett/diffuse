@@ -8,11 +8,12 @@ import com.diffuse.backup.BackupContent
 /**
  * Which runtime permissions each backup category needs. A category is backed up only when
  * its permissions are granted, and a missing permission skips just that category, so
- * denying photo access never stops messages from being backed up.
+ * denying photo (or call log) access never stops messages from being backed up.
  */
 object BackupPermissions {
 
-    private val MESSAGES = listOf(Manifest.permission.READ_SMS, Manifest.permission.READ_CALL_LOG)
+    private val MESSAGES = listOf(Manifest.permission.READ_SMS)
+    private val CALLS = listOf(Manifest.permission.READ_CALL_LOG)
     private val PICTURES = listOf(Manifest.permission.READ_MEDIA_IMAGES)
     private val VIDEOS = listOf(Manifest.permission.READ_MEDIA_VIDEO)
 
@@ -27,6 +28,7 @@ object BackupPermissions {
     /** The permissions [content] can't be backed up without. */
     fun requiredFor(content: BackupContent): List<String> = buildList {
         if (content.messages) addAll(MESSAGES)
+        if (content.calls) addAll(CALLS)
         if (content.pictures) addAll(PICTURES)
         if (content.videos) addAll(VIDEOS)
     }
@@ -41,6 +43,7 @@ object BackupPermissions {
     /** The categories whose required permissions are all granted. */
     fun permitted(context: Context): BackupContent = BackupContent(
         messages = MESSAGES.all { context.isGranted(it) },
+        calls = CALLS.all { context.isGranted(it) },
         pictures = PICTURES.all { context.isGranted(it) },
         videos = VIDEOS.all { context.isGranted(it) },
     )

@@ -21,10 +21,8 @@ object RunSummaryText {
         skippedForPermission: BackupContent = BackupContent.NONE,
     ): String {
         val parts = mutableListOf<String>()
-        if (included.messages) {
-            parts += "${n(summary.calls)} calls"
-            parts += "${n(summary.sms + summary.mms)} messages"
-        }
+        if (included.calls) parts += "${n(summary.calls)} calls"
+        if (included.messages) parts += "${n(summary.sms + summary.mms)} messages"
         if (included.pictures) parts += media(summary.photos, "photos")
         if (included.videos) parts += media(summary.videos, "videos")
 
@@ -34,7 +32,11 @@ object RunSummaryText {
             notes += "${n(summary.failedItems)} $noun failed, will retry"
         }
         val skipped = buildList {
-            if (skippedForPermission.messages) add("messages & calls")
+            when {
+                skippedForPermission.messages && skippedForPermission.calls -> add("messages & calls")
+                skippedForPermission.messages -> add("messages")
+                skippedForPermission.calls -> add("call log")
+            }
             if (skippedForPermission.pictures) add("photos")
             if (skippedForPermission.videos) add("videos")
         }

@@ -88,7 +88,7 @@ uploads carries two private Drive `appProperties`:
 
 | Property | Media file | Document |
 | --- | --- | --- |
-| `diffuseKey` | `media:<kind>:<MediaStore _id>`, e.g. `media:images:123` | `doc:<file name>`, e.g. `doc:sms-2026-11.xml` |
+| `diffuseKey` | `media:<kind>:<MediaStore _id>`, e.g. `media:images:123` | `doc:<phone id>:<file name>`, e.g. `doc:1a2b3c4d:sms-2026-11.xml` |
 | `diffuseVersion` | the file's byte length | SHA-256 of the document's record section |
 | `diffuseOrigin` | short hash of the item's `date_added` and name | (none) |
 | `diffuseFolder` | archive folder it was uploaded to (omitted if too long for a property) | (none) |
@@ -108,6 +108,11 @@ the newest wins. Then for each item:
   Different fingerprint → the file's content is replaced, keeping its id. The fingerprint
   covers only the records, not the header, whose `backup_date`/`backup_set` change on every
   run.
+
+Documents belong to one phone (the phone id is a hash of Android's per-app device id, which
+survives reinstalling Diffuse). If two phones back up to the same Drive, the second one's
+documents get its id in the name, e.g. `sms-2026-11-1a2b3c4d.xml`, and neither phone ever
+overwrites the other's.
 
 Consequences: files deleted from Drive are uploaded again on the next run, and a reinstall
 on the same phone recognises everything already on Drive. A new phone's media is uploaded
