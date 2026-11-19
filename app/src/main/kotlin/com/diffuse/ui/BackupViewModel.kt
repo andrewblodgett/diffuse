@@ -128,7 +128,7 @@ class BackupViewModel(app: Application) : AndroidViewModel(app) {
             }
             when (result) {
                 is PollResult.Authorized -> {
-                    withContext(Dispatchers.IO) { engine.onSignedIn(result.tokens) }
+                    engine.onSignedIn(result.tokens)
                     resetSignIn()
                     homeMessage = "Connected to Google Drive."
                     return

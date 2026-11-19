@@ -81,6 +81,8 @@ class BackupWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
 
     private fun handle(outcome: RunOutcome): Result = when (outcome) {
         is RunOutcome.Completed -> {
+            // Part of what the user asked to back up is being left out every run: tell them.
+            if (!outcome.skippedForPermission.isEmpty) notifier.notifyPermissionsNeeded()
             if (outcome.failedItems > 0) {
                 // A few items failing is usually a passing hiccup; try those again soon rather
                 // than waiting for the next scheduled run (everything that worked is skipped

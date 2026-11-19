@@ -27,9 +27,27 @@ class DriveInventoryTest {
     @Test fun untagged_files_are_matched_only_through_the_legacy_manifest() {
         val files = listOf(DriveFile("L1", "a.jpg"), DriveFile("STRAY", "b.jpg"))
         val inv = DriveInventory(files, journal(), mapOf("media/a.jpg" to "L1", "media/gone.jpg" to "DELETED"))
-        assertEquals("L1", inv.legacyAt("media/a.jpg")!!.fileId)
-        assertNull("a legacy file no longer on Drive is not offered", inv.legacyAt("media/gone.jpg"))
+        assertEquals("L1", inv.takeLegacy("media/a.jpg")!!.fileId)
+        assertNull("each legacy file can be claimed only once", inv.takeLegacy("media/a.jpg"))
+        assertNull("a legacy file no longer on Drive is not offered", inv.takeLegacy("media/gone.jpg"))
         assertTrue(inv.isNameTaken("b.jpg"))
+    }
+
+    @Test fun media_lookups_require_the_same_origin() {
+        val files = listOf(
+            DriveFile("OLD_PHONE", "a.jpg", DriveInventory.mediaTags("media:images:1", "4", "origin-A", "media/DCIM")),
+            DriveFile("NEW_PHONE", "b.jpg", DriveInventory.mediaTags("media:images:1", "9", "origin-B", "media/DCIM")),
+        )
+        val inv = DriveInventory(files, journal())
+        assertEquals("OLD_PHONE", inv.find("media:images:1", "origin-A")!!.fileId)
+        assertEquals("NEW_PHONE", inv.find("media:images:1", "origin-B")!!.fileId)
+        assertNull(inv.find("media:images:1", "origin-C"))
+    }
+
+    @Test fun a_folder_too_long_for_a_drive_property_is_left_out() {
+        assertEquals("media/DCIM", DriveInventory.mediaTags("k", "1", "o", "media/DCIM")[DriveInventory.FOLDER_PROPERTY])
+        val long = "media/" + "x".repeat(200)
+        assertNull(DriveInventory.mediaTags("k", "1", "o", long)[DriveInventory.FOLDER_PROPERTY])
     }
 
     @Test fun recent_uploads_fill_in_for_a_lagging_listing_but_never_override_it() {

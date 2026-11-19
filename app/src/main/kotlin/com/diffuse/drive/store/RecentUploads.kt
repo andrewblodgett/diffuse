@@ -21,7 +21,14 @@ class RecentUploads(
     private val now: () -> Long = System::currentTimeMillis,
     private val windowMs: Long = 24 * 60 * 60 * 1000L,
 ) {
-    data class Entry(val key: String, val fileId: String, val name: String, val version: String)
+    data class Entry(
+        val key: String,
+        val fileId: String,
+        val name: String,
+        val version: String,
+        val origin: String = "",
+        val folder: String = "",
+    )
 
     /** Entries still inside the window; also rewrites the journal without the expired ones. */
     fun load(): List<Entry> {
@@ -42,16 +49,17 @@ class RecentUploads(
     }
 
     private fun format(time: Long, e: Entry) =
-        listOf(time.toString(), e.key, e.fileId, e.version, e.name).joinToString(SEP) { clean(it) } + "\n"
+        listOf(time.toString(), e.key, e.fileId, e.version, e.origin, e.folder, e.name)
+            .joinToString(SEP) { clean(it) } + "\n"
 
     private fun parse(line: String): Pair<Long, Entry>? {
         val f = line.split(SEP)
-        if (f.size != 5) return null
+        if (f.size != 7) return null
         val time = f[0].toLongOrNull() ?: return null
-        return time to Entry(key = f[1], fileId = f[2], version = f[3], name = f[4])
+        return time to Entry(key = f[1], fileId = f[2], version = f[3], origin = f[4], folder = f[5], name = f[6])
     }
 
-    /** Field values never contain the separator or a newline (names are the only free text). */
+    /** Field values never contain the separator or a newline (names and folders are free text). */
     private fun clean(s: String) = s.replace('\t', ' ').replace('\n', ' ').replace('\r', ' ')
 
     private companion object {

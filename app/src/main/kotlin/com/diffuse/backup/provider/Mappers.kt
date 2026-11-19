@@ -60,26 +60,37 @@ object MmsMapper {
         }
 
     /**
-     * Maps a `content://mms/part` row. The provider keeps some payloads in the part's
-     * `text` column (AOSP's PduPersister does this for text/plain, text/html and the SMIL
-     * layout) and everything else in a file, including *textual* attachments such as
-     * vCards. So the rule is driven by the data, not the content type: use the `text`
-     * column when it has a value, otherwise call [readBytes] for the file's payload.
-     * (Deciding by content type alone used to drop every `text/x-vCard` attachment.)
+     * Maps a `content://mms/part` row. AOSP's PduPersister keeps only plain text, HTML and
+     * the SMIL layout in the part's `text` column; every other part, including textual
+     * attachments such as vCards, lives in a file whose bytes [readBytes] returns. So:
+     *  - one of those three types with a non-empty `text` → use the text;
+     *  - anything else → the file's bytes, whatever the `text` column says (a provider may
+     *    leave "" or a caption there on an image), falling back to the text only if the part
+     *    has no readable file.
+     * (Deciding by the "text/" prefix used to drop every `text/x-vCard` attachment.)
      */
     fun mapPart(row: Row, readBytes: () -> ByteArray?): MmsPart {
-        val text = row.getString("text")
+        val contentType = row.getString("ct").orEmpty()
+        val columnText = row.getString("text")
+        val usesColumn = storesTextInColumn(contentType) && !columnText.isNullOrEmpty()
+        val data = if (usesColumn) null else readBytes()
         return MmsPart(
             seq = row.getInt("seq") ?: 0,
-            contentType = row.getString("ct").orEmpty(),
+            contentType = contentType,
             name = row.getString("name"),
             charset = row.getString("chset"),
             contentLocation = row.getString("cl"),
             contentId = row.getString("cid"),
-            text = text,
-            data = if (text == null) readBytes() else null,
+            text = if (data == null) columnText else null,
+            data = data,
         )
     }
+
+    /** The part types the provider stores in the `text` column rather than a file. */
+    fun storesTextInColumn(contentType: String): Boolean =
+        contentType.lowercase() in TEXT_COLUMN_TYPES
+
+    private val TEXT_COLUMN_TYPES = setOf("text/plain", "text/html", "application/smil")
 
     fun mapAddr(row: Row) = MmsAddr(
         address = row.getString("address"),

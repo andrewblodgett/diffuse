@@ -20,6 +20,8 @@ data class DriveFile(
     val name: String,
     /** Private key/value tags Diffuse attached at upload (Drive `appProperties`). */
     val appProperties: Map<String, String> = emptyMap(),
+    /** Size in bytes, when Drive reports one. */
+    val size: Long? = null,
 )
 
 /** The Drive operations Diffuse needs; implemented by [DriveClient], fakeable in tests. */
@@ -114,7 +116,7 @@ class DriveClient(
         do {
             val url = buildString {
                 append("$apiBase/files?q=${enc(q)}&spaces=drive&pageSize=1000&orderBy=createdTime")
-                append("&fields=${enc("nextPageToken,files(id,name,appProperties)")}")
+                append("&fields=${enc("nextPageToken,files(id,name,size,appProperties)")}")
                 pageToken?.let { append("&pageToken=").append(enc(it)) }
             }
             val page = withRetry {
@@ -122,7 +124,7 @@ class DriveClient(
                 if (!resp.isSuccess) throw DriveHttpException.from("List Drive files", resp)
                 json.decodeFromString<FileListPage>(resp.body)
             }
-            page.files.mapTo(files) { DriveFile(it.id, it.name, it.appProperties.orEmpty()) }
+            page.files.mapTo(files) { DriveFile(it.id, it.name, it.appProperties.orEmpty(), it.size?.toLongOrNull()) }
             pageToken = page.nextPageToken
         } while (pageToken != null)
         return files
@@ -306,6 +308,8 @@ class DriveClient(
         val id: String,
         val name: String = "",
         val appProperties: Map<String, String>? = null,
+        /** Drive sends int64 values as JSON strings. */
+        val size: String? = null,
     )
 
     @Serializable

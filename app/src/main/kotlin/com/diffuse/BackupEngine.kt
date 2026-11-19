@@ -31,6 +31,11 @@ import com.diffuse.util.causeOfType
 import com.diffuse.work.BackupSettings
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,6 +45,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.InputStream
@@ -56,15 +63,23 @@ data class RunProgress(
 
 /** How a call to [BackupEngine.runBackup] ended, other than by throwing. */
 sealed interface RunOutcome {
-    /** The run finished. [summaryText] is what was recorded as the last run. */
-    data class Completed(val summary: BackupSummary, val summaryText: String) : RunOutcome {
+    /**
+     * The run finished. [summaryText] is what was recorded as the last run.
+     * [skippedForPermission] lists enabled categories left out because their permission
+     * isn't granted (the user needs to be told).
+     */
+    data class Completed(
+        val summary: BackupSummary,
+        val summaryText: String,
+        val skippedForPermission: BackupContent = BackupContent.NONE,
+    ) : RunOutcome {
         val failedItems: Int get() = summary.failedItems
     }
 
     /** Another run was already in progress, so this one did nothing. */
     data object AlreadyRunning : RunOutcome
 
-    /** Drive isn't connected (or the build has no Drive credentials). */
+    /** Drive isn't connected (or the build has no Drive credentials, or the user signed out mid-run). */
     data object NotConnected : RunOutcome
 
     /** Every category is turned off in Settings. */
@@ -103,6 +118,10 @@ class BackupEngine private constructor(context: Context) {
     private val settings = BackupSettings(app)
 
     private val runLock = Mutex()
+    /** Serialises credential writes, so a sign-out's background clear can't land after a new sign-in. */
+    private val credentialLock = Mutex()
+    /** The pass in progress, so [signOut] can stop it. */
+    @Volatile private var activePass: Job? = null
     private val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _connected = MutableStateFlow(credentialStore.isConnected)
@@ -128,9 +147,13 @@ class BackupEngine private constructor(context: Context) {
     // --- Connection -------------------------------------------------------------------------
 
     /** Store the tokens from a completed QR sign-in and look up the account's email. */
-    fun onSignedIn(tokens: TokenResponse) {
-        recentUploads.clear() // it describes whichever account was connected before
-        tokenProvider.onSignedIn(tokens)
+    suspend fun onSignedIn(tokens: TokenResponse) {
+        credentialLock.withLock {
+            withContext(Dispatchers.IO) {
+                recentUploads.clear() // it describes whichever account was connected before
+                tokenProvider.onSignedIn(tokens)
+            }
+        }
         _connected.value = true
         background.launch { refreshAccountEmail() }
     }
@@ -148,21 +171,32 @@ class BackupEngine private constructor(context: Context) {
     }
 
     /**
-     * Forget the Drive connection, and ask Google to revoke the token so it stops working
-     * everywhere (best-effort; signing out works offline too). The user re-scans the QR to
-     * reconnect.
+     * Forget the Drive connection, stop any backup in progress (quietly: it isn't a failure),
+     * and ask Google to revoke the token so it stops working everywhere (best-effort; signing
+     * out works offline too). The user re-scans the QR to reconnect. Safe to call from the
+     * main thread: the state flips at once and the disk and network work happens in the
+     * background.
      */
     fun signOut() {
-        val token = credentialStore.refreshToken
-        forgetCredentials()
-        if (token != null) background.launch { auth.revoke(token) }
-    }
-
-    private fun forgetCredentials() {
-        credentialStore.clear()
-        recentUploads.clear()
         _connected.value = false
         _accountEmail.value = null
+        activePass?.cancel()
+        background.launch {
+            val token = credentialStore.refreshToken
+            forgetCredentials()
+            if (token != null) auth.revoke(token)
+        }
+    }
+
+    private suspend fun forgetCredentials() {
+        _connected.value = false
+        _accountEmail.value = null
+        credentialLock.withLock {
+            withContext(Dispatchers.IO) {
+                credentialStore.clear()
+                recentUploads.clear()
+            }
+        }
     }
 
     // --- Running ----------------------------------------------------------------------------
@@ -190,16 +224,19 @@ class BackupEngine private constructor(context: Context) {
 
         _progress.value = RunProgress()
         try {
-            val summary = runPass(included)
-            val text = RunSummaryText.describe(summary, included, skippedForPermission = selected - included)
+            val summary = runPassUnlessSignedOut(included) ?: return RunOutcome.NotConnected
+            val skipped = selected - included
+            val text = RunSummaryText.describe(summary, included, skippedForPermission = skipped)
             record(LastRun(System.currentTimeMillis(), success = true, summary = text, failedItems = summary.failedItems))
             // Every media item on the phone has now been matched to Drive, so the 0.1.x manifest
             // has nothing left to contribute.
             if (included.pictures && included.videos && summary.failedItems == 0) legacyManifest.retire()
-            return RunOutcome.Completed(summary, text)
+            return RunOutcome.Completed(summary, text, skipped)
         } catch (e: CancellationException) {
             throw e // stopped by the system (e.g. Wi-Fi lost); WorkManager runs it again later
         } catch (e: Exception) {
+            // Signed out mid-run: the errors are just the missing credentials, not a failure.
+            if (!_connected.value) return RunOutcome.NotConnected
             val revoked = e.causeOfType<AuthRevokedException>()
             if (revoked != null) forgetCredentials()
             val message = (revoked ?: e).message ?: e.javaClass.simpleName
@@ -210,6 +247,23 @@ class BackupEngine private constructor(context: Context) {
             workDir.deleteRecursively()
             runLock.unlock()
         }
+    }
+
+    /**
+     * [runPass], in a job [signOut] can cancel. Returns null if it was stopped that way; a
+     * cancellation of the run itself (WorkManager stopping the worker) still propagates.
+     */
+    private suspend fun runPassUnlessSignedOut(content: BackupContent): BackupSummary? = try {
+        coroutineScope {
+            val pass = async { runPass(content) }
+            activePass = pass
+            pass.await()
+        }
+    } catch (e: CancellationException) {
+        currentCoroutineContext().ensureActive()
+        null
+    } finally {
+        activePass = null
     }
 
     private suspend fun runPass(content: BackupContent): BackupSummary {

@@ -90,10 +90,14 @@ uploads carries two private Drive `appProperties`:
 | --- | --- | --- |
 | `diffuseKey` | `media:<kind>:<MediaStore _id>`, e.g. `media:images:123` | `doc:<file name>`, e.g. `doc:sms-2026-11.xml` |
 | `diffuseVersion` | the file's byte length | SHA-256 of the document's record section |
+| `diffuseOrigin` | short hash of the item's `date_added` and name | (none) |
+| `diffuseFolder` | archive folder it was uploaded to (omitted if too long for a property) | (none) |
 
 Each run lists the app's files on Drive (under `drive.file` that is exactly the files
-Diffuse created) and keys them by `diffuseKey`; when several share a key, the newest wins.
-Then for each item:
+Diffuse created) and groups them by `diffuseKey`. A media file only counts as an item's
+backup if its `diffuseOrigin` matches too: MediaStore ids restart on a new phone or a rebuilt
+media database, so `images:42` alone could name an unrelated photo. Among matching files,
+the newest wins. Then for each item:
 
 - **Media**, same key and version → already backed up; the bytes aren't even read.
   Same key, different length (edited, or first caught while still being written) → the new
@@ -106,12 +110,15 @@ Then for each item:
   run.
 
 Consequences: files deleted from Drive are uploaded again on the next run, and a reinstall
-or a new phone recognises everything already on Drive. A short local journal of the last
+on the same phone recognises everything already on Drive. A new phone's media is uploaded
+as new files (with an id suffix where a name is already taken). A short local journal of the last
 day's uploads covers the moments when a brand-new file doesn't show in Drive's listing yet.
 
 Files uploaded by Diffuse 0.1.x have no tags; on the first run after upgrading they are
 matched through 0.1.x's local `upload-manifest.properties` and tagged in place, then that
-file is deleted.
+file is deleted. Each 0.1.x file is claimed by at most one item, and only if its size on
+Drive equals the item's current length; otherwise the current bytes are uploaded as an
+edited version.
 
 Lengths come from the file descriptor, never MediaStore's `_size`, which reads 0 for fresh
 captures on the Light Phone III.

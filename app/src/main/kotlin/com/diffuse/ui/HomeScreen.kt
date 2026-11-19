@@ -69,7 +69,9 @@ fun HomeScreen(vm: BackupViewModel, onOpenSettings: () -> Unit, onConnect: () ->
         vm.showHomeMessage("Diffuse needs permission to read your data to back it up.")
         val activity = context as? Activity
         val canAskAgain = activity != null &&
-            BackupPermissions.toRequest(selected).any { activity.shouldShowRequestPermissionRationale(it) }
+            // Only the required permissions count: an optional one (notifications, location)
+            // still being askable mustn't keep the user from reaching App Settings.
+            BackupPermissions.requiredFor(selected).any { activity.shouldShowRequestPermissionRationale(it) }
         if (!canAskAgain) {
             // Permanently denied → the only way to grant is App Settings.
             context.startActivity(

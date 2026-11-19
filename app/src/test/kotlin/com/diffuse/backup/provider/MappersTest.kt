@@ -47,6 +47,28 @@ class MappersTest {
         assertEquals(3, binaryPart.data!!.size)
     }
 
+    @Test fun mms_binary_part_reads_bytes_even_if_the_text_column_has_a_value() {
+        val binaryPart = MmsMapper.mapPart(
+            FakeRow(mapOf("seq" to 1, "ct" to "image/jpeg", "text" to "ignored")),
+        ) { byteArrayOf(1, 2, 3) }
+        assertNull(binaryPart.text)
+        assertEquals(3, binaryPart.data!!.size)
+    }
+
+    @Test fun mms_text_part_with_empty_column_falls_back_to_its_file() {
+        val part = MmsMapper.mapPart(FakeRow(mapOf("seq" to 0, "ct" to "text/plain", "text" to ""))) {
+            "from file".toByteArray()
+        }
+        assertEquals("from file", String(part.data!!))
+        assertNull(part.text)
+    }
+
+    @Test fun mms_part_without_a_file_keeps_whatever_text_it_has() {
+        val part = MmsMapper.mapPart(FakeRow(mapOf("seq" to 0, "ct" to "image/jpeg", "text" to "caption"))) { null }
+        assertEquals("caption", part.text)
+        assertNull(part.data)
+    }
+
     @Test fun mms_vcard_part_is_read_from_its_file_not_dropped() {
         // AOSP stores text/x-vCard in a file, leaving the text column null. Deciding by the
         // "text/" prefix used to emit text="null" and lose the attachment entirely.

@@ -14,8 +14,9 @@ class RecentUploadsTest {
     private fun journal() = RecentUploads(File(tmp.root, "recent.tsv"), now = { now }, windowMs = 100)
 
     @Test fun records_survive_a_new_instance_and_expire_after_the_window() {
-        journal().record(RecentUploads.Entry("k", "id", "a.jpg", "4"))
-        assertEquals(listOf(RecentUploads.Entry("k", "id", "a.jpg", "4")), journal().load())
+        val entry = RecentUploads.Entry("k", "id", "a.jpg", "4", origin = "o", folder = "media/DCIM")
+        journal().record(entry)
+        assertEquals(listOf(entry), journal().load())
 
         now += 101
         assertTrue(journal().load().isEmpty())

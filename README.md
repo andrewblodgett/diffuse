@@ -82,8 +82,9 @@ on picks up everything, including what was created while it was off.
 3. **Drive is the record.** Every file Diffuse uploads is tagged (privately, via
    Drive `appProperties`) with what it is and which version. Each run starts by
    listing those tags, so if you delete backups on Drive they're re-uploaded,
-   and after a reinstall or on a new phone nothing already on Drive is uploaded
-   twice.
+   and after reinstalling Diffuse nothing already on Drive is uploaded twice.
+   (A new phone numbers its media from scratch, so its photos are backed up as
+   new files rather than risk being mistaken for old ones.)
 
 **When something goes wrong:** a dropped connection resumes the upload from where
 it stopped; network trouble and Google-side errors are retried automatically

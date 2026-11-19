@@ -61,7 +61,7 @@ class DriveClientTest {
             val url = decoded(req)
             assertTrue("folders must be excluded", "mimeType!=" in url)
             if ("pageToken" !in url) {
-                HttpResp(200, """{"nextPageToken":"p2","files":[{"id":"A","name":"a.jpg","appProperties":{"diffuseKey":"media:images:1"}},{"id":"B","name":"b"}]}""")
+                HttpResp(200, """{"nextPageToken":"p2","files":[{"id":"A","name":"a.jpg","size":"1234","appProperties":{"diffuseKey":"media:images:1"}},{"id":"B","name":"b"}]}""")
             } else {
                 HttpResp(200, """{"files":[{"id":"C","name":"c"}]}""")
             }
@@ -69,6 +69,8 @@ class DriveClientTest {
         val files = client(http).listFiles()
         assertEquals(listOf("A", "B", "C"), files.map { it.id })
         assertEquals("media:images:1", files[0].appProperties["diffuseKey"])
+        assertEquals(1234L, files[0].size) // Drive sends int64 as a string
+        assertEquals(null, files[1].size)
         assertTrue(files[1].appProperties.isEmpty())
     }
 

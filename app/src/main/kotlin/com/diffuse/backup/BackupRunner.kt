@@ -9,6 +9,8 @@ import com.diffuse.backup.format.SmsBackupXmlWriter
 import com.diffuse.backup.model.MediaRecord
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -155,6 +157,9 @@ class BackupRunner(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    // A stop mid-upload can surface as an I/O error (InterruptedIOException)
+                    // rather than a cancellation; if the run was stopped, that isn't an item failure.
+                    currentCoroutineContext().ensureActive()
                     Log.w(TAG, "${record.stableId} failed, will retry next run", e)
                     tally = tally.copy(failed = tally.failed + 1)
                     if (++consecutiveFailures >= maxConsecutiveMediaFailures) {

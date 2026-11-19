@@ -24,11 +24,16 @@ object BackupPermissions {
     private const val MEDIA_LOCATION = Manifest.permission.ACCESS_MEDIA_LOCATION
     private const val NOTIFICATIONS = Manifest.permission.POST_NOTIFICATIONS
 
-    /** Everything worth asking for before backing up [content]: its required permissions plus the optional ones. */
-    fun toRequest(content: BackupContent): Array<String> = buildList {
+    /** The permissions [content] can't be backed up without. */
+    fun requiredFor(content: BackupContent): List<String> = buildList {
         if (content.messages) addAll(MESSAGES)
         if (content.pictures) addAll(PICTURES)
         if (content.videos) addAll(VIDEOS)
+    }
+
+    /** Everything worth asking for before backing up [content]: its required permissions plus the optional ones. */
+    fun toRequest(content: BackupContent): Array<String> = buildList {
+        addAll(requiredFor(content))
         if (content.pictures || content.videos) add(MEDIA_LOCATION)
         add(NOTIFICATIONS)
     }.toTypedArray()

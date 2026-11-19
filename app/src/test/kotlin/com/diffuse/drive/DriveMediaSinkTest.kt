@@ -24,11 +24,11 @@ class DriveMediaSinkTest {
     /** The real byte length of each content URI, as the file descriptor would report it. */
     private val lengths = mutableMapOf<String, Long>()
 
-    private fun photo(id: Long, name: String = "photo.jpg", size: Long = 4) = MediaRecord(
+    private fun photo(id: Long, name: String = "photo.jpg", size: Long = 4, folder: String = "DCIM/Camera/") = MediaRecord(
         id = id,
         kind = MediaKind.IMAGE,
         displayName = name,
-        relativePath = "DCIM/Camera/",
+        relativePath = folder,
         mimeType = "image/jpeg",
         sizeBytes = 0, // the LP3 reports _size=0 for fresh captures; the sink must not care
         dateTakenEpochMs = null,
@@ -135,8 +135,50 @@ class DriveMediaSinkTest {
         assertTrue(drive.files.isEmpty())
     }
 
+    @Test fun a_different_photo_that_reuses_an_old_id_is_still_uploaded() {
+        sink().put(photo(42, name = "old.png", size = 4)) // backed up from the old phone
+        File(tmp.root, "recent.tsv").delete()
+
+        // A new phone numbers its media from 1 again: same id, same length, different photo.
+        val newPhone = photo(42, name = "new.png", size = 4).copy(dateAddedEpochMs = 99_000)
+        val result = sink().put(newPhone) as MediaResult.Stored
+
+        assertTrue("must not be mistaken for the old phone's photo", result.uploadedNow)
+        assertEquals("media/DCIM/Camera/new.png", result.backupPath) // a new item, not "(edited)"
+        assertEquals(2, drive.files.size)
+    }
+
+    @Test fun a_moved_photo_is_indexed_where_its_bytes_actually_are() {
+        sink().put(photo(1, folder = "DCIM/Camera/"))
+        val moved = sink().put(photo(1, folder = "Pictures/Trip/")) as MediaResult.Stored
+        assertEquals(false, moved.uploadedNow)
+        assertEquals("media/DCIM/Camera/photo.jpg", moved.backupPath)
+    }
+
+    @Test fun a_0_1_file_is_claimed_by_only_one_item() {
+        drive.files += DriveFile("OLD", "IMG.jpg", size = 4)
+        val legacy = mapOf("media/DCIM/Camera/IMG.jpg" to "OLD")
+        val s = sink(legacy)
+
+        val first = s.put(photo(1, name = "IMG.jpg")) as MediaResult.Stored
+        val second = s.put(photo(2, name = "IMG.jpg")) as MediaResult.Stored
+
+        assertEquals("OLD", first.remoteId)
+        assertTrue("the second item has its own bytes to upload", second.uploadedNow)
+        assertEquals("media/DCIM/Camera/IMG (2).jpg", second.backupPath)
+    }
+
+    @Test fun a_0_1_file_with_a_different_size_is_superseded_not_adopted() {
+        drive.files += DriveFile("OLD", "photo.jpg", size = 3) // the photo was edited after 0.1.x uploaded it
+        val result = sink(mapOf("media/DCIM/Camera/photo.jpg" to "OLD")).put(photo(1, size = 4)) as MediaResult.Stored
+
+        assertTrue(result.uploadedNow)
+        assertEquals("media/DCIM/Camera/photo (edited 2026-11-19).jpg", result.backupPath)
+        assertTrue(drive.tagged.isEmpty())
+    }
+
     @Test fun a_file_from_version_0_1_is_adopted_and_tagged_instead_of_re_uploaded() {
-        drive.files += DriveFile("OLD", "photo.jpg") // untagged, as 0.1.x uploaded it
+        drive.files += DriveFile("OLD", "photo.jpg", size = 4) // untagged, as 0.1.x uploaded it
         val legacy = mapOf("media/DCIM/Camera/photo.jpg" to "OLD")
 
         val result = sink(legacy).put(photo(1)) as MediaResult.Stored
